@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -133,29 +134,17 @@ fun LogoMark(size: androidx.compose.ui.unit.Dp = 36.dp) {
     )
 }
 
+/** Logo and name on every page, with a search icon on the right. Pass null for [onSearch] where there is nothing to search; [onBack] adds a back arrow (inside folders). */
 @Composable
-fun SearchPill(modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun AppHeader(onSearch: (() -> Unit)?, onBack: (() -> Unit)? = null) {
     val pal = LocalPal.current
-    Row(
-        modifier.height(40.dp).clip(RoundedCornerShape(20.dp)).background(pal.chip).clickable(onClick = onClick).padding(horizontal = 14.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(Icons.Rounded.Search, null, tint = pal.soft, modifier = Modifier.size(20.dp))
-        Spacer(Modifier.width(8.dp))
-        Text("Search PDFs", color = pal.soft, fontSize = 15.sp, maxLines = 1)
-    }
-}
-
-/** Logo, name and search in one row. Pass null for [onSearch] on screens with nothing to search. */
-@Composable
-fun AppHeader(onSearch: (() -> Unit)?) {
-    val pal = LocalPal.current
-    Row(Modifier.fillMaxWidth().height(60.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().height(60.dp).padding(start = if (onBack != null) 4.dp else 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = pal.ink) }
         LogoMark(36.dp)
         Spacer(Modifier.width(2.dp))
         Text("Shelf", fontFamily = Serif, fontStyle = FontStyle.Italic, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = pal.accent)
-        Spacer(Modifier.width(14.dp))
-        if (onSearch != null) SearchPill(Modifier.weight(1f), onSearch) else Spacer(Modifier.weight(1f))
+        Spacer(Modifier.weight(1f))
+        if (onSearch != null) IconButton(onClick = onSearch) { Icon(Icons.Rounded.Search, "Search", tint = pal.ink) }
     }
 }
 

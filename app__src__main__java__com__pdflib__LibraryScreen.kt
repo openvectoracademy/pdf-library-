@@ -94,10 +94,7 @@ fun LibraryScreen(vm: LibraryVm) {
                     }
                 }
             } else if (current != null) {
-                Row(Modifier.fillMaxWidth().height(60.dp).padding(start = 4.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { vm.up() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = pal.ink) }
-                    SearchPill(Modifier.weight(1f), openSearch)
-                }
+                AppHeader(onSearch = openSearch, onBack = { vm.up() })
             } else {
                 AppHeader(if (onboarding) null else openSearch)
             }
