@@ -134,15 +134,13 @@ fun LogoMark(size: androidx.compose.ui.unit.Dp = 36.dp) {
     )
 }
 
-/** Logo and name on every page, with a search icon on the right. Pass null for [onSearch] where there is nothing to search; [onBack] adds a back arrow (inside folders). */
+/** A quiet brand bar: just the logo mark, so the page title below stays the hero. [onSearch] null = no search icon; [onBack] adds a back arrow (inside folders). */
 @Composable
 fun AppHeader(onSearch: (() -> Unit)?, onBack: (() -> Unit)? = null) {
     val pal = LocalPal.current
-    Row(Modifier.fillMaxWidth().height(60.dp).padding(start = if (onBack != null) 4.dp else 12.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().height(56.dp).padding(start = if (onBack != null) 4.dp else 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = pal.ink) }
-        LogoMark(36.dp)
-        Spacer(Modifier.width(2.dp))
-        Text("Shelf", fontFamily = Serif, fontStyle = FontStyle.Italic, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = pal.accent)
+        LogoMark(30.dp)
         Spacer(Modifier.weight(1f))
         if (onSearch != null) IconButton(onClick = onSearch) { Icon(Icons.Rounded.Search, "Search", tint = pal.ink) }
     }

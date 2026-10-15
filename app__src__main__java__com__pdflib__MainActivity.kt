@@ -16,6 +16,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +39,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun Root(vm: LibraryVm = viewModel()) {
     val pal = LocalPal.current
+    var showSplash by rememberSaveable { mutableStateOf(true) }
     val pdfs by vm.pdfs.collectAsState()
     val recent = remember(pdfs) { pdfs.filter { it.lastOpened > 0 }.sortedByDescending { it.lastOpened }.take(100) }
     val saved = remember(pdfs) { sortNatural(pdfs.filter { it.favorite }) }
@@ -61,6 +63,7 @@ private fun Root(vm: LibraryVm = viewModel()) {
         vm.readerId?.let { ReaderScreen(vm, it) }
         PdfDialogHost(vm)
         vm.undo?.let { UndoBar(vm, it, Modifier.align(Alignment.BottomCenter)) }
+        if (showSplash) Splash(ready = vm.loaded) { showSplash = false }
     }
 }
 
