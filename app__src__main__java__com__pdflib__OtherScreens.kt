@@ -150,6 +150,7 @@ fun SettingsScreen(vm: LibraryVm) {
     val bms by vm.bookmarks.collectAsState()
     val removed by vm.hidden.collectAsState()
     var showRemoved by remember { mutableStateOf(false) }
+    var confirmSource by remember { mutableStateOf<Uri?>(null) }
     val add = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) vm.addSource(u) }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { u -> if (u != null) vm.exportBackup(u) }
     val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) vm.importBackup(u) }
@@ -174,7 +175,7 @@ fun SettingsScreen(vm: LibraryVm) {
                         fontSize = 12.sp, lineHeight = 16.sp, color = if (canEdit) pal.soft else pal.accent
                     )
                 }
-                IconButton(onClick = { vm.removeSource(u) }) { Icon(Icons.Rounded.Close, "Remove", tint = pal.soft) }
+                IconButton(onClick = { confirmSource = u }) { Icon(Icons.Rounded.Close, "Remove", tint = pal.soft) }
             }
         }
         item { SettingRow(Icons.Rounded.Add, "Add a folder", "Subfolders are included automatically", pal.accent) { add.launch(null) } }
@@ -198,6 +199,26 @@ fun SettingsScreen(vm: LibraryVm) {
             Text("${pdfs.size} PDFs · ${folders.size} folders · ${bms.size} bookmarks\n\nShelf works fully offline. Your PDFs stay where they are, and only the organisation is stored on this phone.",
                 fontSize = 13.sp, lineHeight = 19.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 16.dp))
         }
+        item {
+            Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp)) {
+                Text("Developed by", fontSize = 12.sp, color = pal.soft)
+                Spacer(Modifier.height(2.dp))
+                Text("Md. Al Amin", fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = pal.ink)
+                Text("Barguna, Bangladesh", fontSize = 13.sp, color = pal.soft)
+            }
+        }
+    }
+
+    confirmSource?.let { u ->
+        AlertDialog(
+            onDismissRequest = { confirmSource = null }, containerColor = pal.surface,
+            title = { Text("Stop using “${treeLabel(u)}”?", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text("Shelf will stop looking in this folder. Your PDFs stay on your phone, and their folders, stars and bookmarks stay in Shelf. They show “File not found” until you add the folder again.")
+            },
+            confirmButton = { TextButton(onClick = { vm.removeSource(u); confirmSource = null }) { Text("Stop using", color = pal.accent) } },
+            dismissButton = { TextButton(onClick = { confirmSource = null }) { Text("Cancel") } }
+        )
     }
 
     if (showRemoved) ModalBottomSheet(onDismissRequest = { showRemoved = false }, containerColor = pal.surface) {
