@@ -45,7 +45,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     var sources by mutableStateOf<List<Uri>>(emptyList())
 
     var invert by mutableStateOf(prefs.getBoolean("invert", false))
-    fun setInvert(v: Boolean) { invert = v; prefs.edit().putBoolean("invert", v).apply() }
+    fun updateInvert(v: Boolean) { invert = v; prefs.edit().putBoolean("invert", v).apply() }
 
     init {
         refreshSources()

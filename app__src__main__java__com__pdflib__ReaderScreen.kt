@@ -162,7 +162,7 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
                     Icon(if (here != null) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Bookmark page", tint = if (here != null) pal.accent else pal.ink)
                 }
                 IconButton(onClick = { sheet = true }) { Icon(Icons.Rounded.FormatListBulleted, "Bookmarks", tint = pal.ink) }
-                IconButton(onClick = { vm.setInvert(!invert) }) { Icon(Icons.Rounded.InvertColors, "Night reading", tint = if (invert) pal.accent else pal.ink) }
+                IconButton(onClick = { vm.updateInvert(!invert) }) { Icon(Icons.Rounded.InvertColors, "Night reading", tint = if (invert) pal.accent else pal.ink) }
             }
         }
 
