@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.sp
 /** Multi-select PDF picker whose grants survive a restart. */
 private class PickPdfs : ActivityResultContracts.OpenMultipleDocuments() {
     override fun createIntent(context: Context, input: Array<String>): Intent =
-        super.createIntent(context, input).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        super.createIntent(context, input).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
 }
 
 private sealed interface Dlg {
@@ -37,7 +37,6 @@ private sealed interface Dlg {
     class Edit(val f: FolderEntity) : Dlg
     class Delete(val f: FolderEntity) : Dlg
     class MoveFolder(val f: FolderEntity) : Dlg
-    object MovePdfs : Dlg
 }
 
 @Composable
@@ -49,14 +48,15 @@ fun LibraryScreen(vm: LibraryVm) {
     val byId = remember(folders) { folders.associateBy { it.id } }
     val current = currentId?.let { byId[it] }
     val subs = remember(folders, currentId) { folders.filter { it.parentId == currentId } }
-    val docs = remember(pdfs, currentId) { pdfs.filter { it.folderId == currentId } }
+    val docs = remember(pdfs, currentId) { sortNatural(pdfs.filter { it.folderId == currentId }) }
     val stats = remember(pdfs, folders) { FolderStats(pdfs, folders) }
     val resume = remember(pdfs) { pdfs.filter { it.lastOpened > 0 }.maxByOrNull { it.lastOpened } }
     val selecting = vm.selection.isNotEmpty()
     var dlg by remember { mutableStateOf<Dlg?>(null) }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { u -> if (u != null) vm.addSource(u) }
+    val picker = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) vm.addSource(u) }
     val pickFiles = rememberLauncherForActivityResult(PickPdfs()) { l -> if (l.isNotEmpty()) vm.addFiles(l, currentId) }
     val onboarding = vm.loaded && vm.sources.isEmpty() && pdfs.isEmpty() && currentId == null
+    val openSearch: () -> Unit = { vm.searching = true }
 
     BackHandler(enabled = selecting || vm.stack.isNotEmpty()) { if (selecting) vm.selection.clear() else vm.up() }
     LaunchedEffect(currentId) { vm.libState.scrollToItem(0) }
@@ -64,9 +64,10 @@ fun LibraryScreen(vm: LibraryVm) {
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
-            // ---- slim top bar ----
-            Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (selecting) {
+            // ---- top bar: logo + name + search, selection tools, or back + search inside a folder ----
+            if (selecting) {
+                var more by remember { mutableStateOf(false) }
+                Row(Modifier.fillMaxWidth().height(60.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { vm.selection.clear() }) { Icon(Icons.Rounded.Close, "Cancel", tint = pal.ink) }
                     Text("${vm.selection.size} selected", fontFamily = Serif, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = pal.ink, modifier = Modifier.weight(1f))
                     IconButton(onClick = { vm.selection.clear(); vm.selection.addAll(docs.map { it.id }) }) { Icon(Icons.Rounded.SelectAll, "Select all", tint = pal.ink) }
@@ -74,16 +75,31 @@ fun LibraryScreen(vm: LibraryVm) {
                         val allFav = vm.selection.all { id -> pdfs.firstOrNull { it.id == id }?.favorite == true }
                         vm.setFavorite(vm.selection.toList(), !allFav); vm.selection.clear()
                     }) { Icon(Icons.Rounded.Star, "Favorite", tint = pal.hi) }
-                    IconButton(onClick = { dlg = Dlg.MovePdfs }) { Icon(Icons.Rounded.FolderOpen, "Move", tint = pal.accent) }
-                } else {
-                    if (current != null) {
-                        IconButton(onClick = { vm.up() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = pal.ink) }
-                        Spacer(Modifier.weight(1f))
-                    } else {
-                        Text("Shelf", fontFamily = Serif, fontStyle = FontStyle.Italic, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = pal.accent, modifier = Modifier.padding(start = 12.dp).weight(1f))
+                    IconButton(onClick = { vm.pdfDialog = PdfDlg.Move(vm.selection.toList()) }) { Icon(Icons.Rounded.FolderOpen, "Move", tint = pal.accent) }
+                    Box {
+                        IconButton(onClick = { more = true }) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.ink) }
+                        DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
+                            if (vm.selection.size == 1) DropdownMenuItem(text = { Text("Rename") }, onClick = {
+                                more = false
+                                val one = pdfs.firstOrNull { it.id == vm.selection.first() }
+                                if (one != null) { vm.selection.clear(); vm.pdfDialog = PdfDlg.Rename(one) }
+                            })
+                            DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { more = false; vm.removeFromShelf(vm.selection.toList()) })
+                            DropdownMenuItem(text = { Text("Delete from phone", color = pal.accent) }, onClick = {
+                                more = false
+                                val ids = vm.selection.toList()
+                                vm.pdfDialog = PdfDlg.Delete(ids, pdfs.firstOrNull { it.id == ids.firstOrNull() }?.title() ?: "")
+                            })
+                        }
                     }
-                    IconButton(onClick = { vm.searching = true }) { Icon(Icons.Rounded.Search, "Search", tint = pal.ink) }
                 }
+            } else if (current != null) {
+                Row(Modifier.fillMaxWidth().height(60.dp).padding(start = 4.dp, end = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { vm.up() }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = pal.ink) }
+                    SearchPill(Modifier.weight(1f), openSearch)
+                }
+            } else {
+                AppHeader(if (onboarding) null else openSearch)
             }
 
             LazyColumn(state = vm.libState, modifier = Modifier.weight(1f), contentPadding = PaddingValues(bottom = 110.dp)) {
@@ -178,7 +194,8 @@ fun LibraryScreen(vm: LibraryVm) {
                             PdfRow(p, null, selecting, p.id in vm.selection,
                                 onClick = { if (selecting) vm.toggleSel(p.id) else vm.openReader(p.id) },
                                 onLong = { vm.toggleSel(p.id) },
-                                onFav = { vm.setFavorite(listOf(p.id), !p.favorite) })
+                                onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
+                                onMore = { a -> vm.rowAction(p, a) })
                         }
                     }
 
@@ -213,7 +230,6 @@ fun LibraryScreen(vm: LibraryVm) {
             dismissButton = { TextButton(onClick = { dlg = null }) { Text("Cancel") } }
         )
         is Dlg.MoveFolder -> FolderPicker(folders, descendants(d.f.id, folders), "Move “${d.f.name}” to", { vm.moveFolder(d.f.id, it); dlg = null }, { dlg = null })
-        is Dlg.MovePdfs -> FolderPicker(folders, emptySet(), "Move ${vm.selection.size} PDFs to", { vm.movePdfs(vm.selection.toList(), it); vm.selection.clear(); dlg = null }, { dlg = null })
         null -> {}
     }
 }

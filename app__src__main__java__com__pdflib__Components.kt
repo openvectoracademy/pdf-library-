@@ -2,7 +2,11 @@
 
 package com.pdflib
 
+import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,6 +24,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -33,7 +42,47 @@ import java.util.Locale
 val Serif = FontFamily.Serif
 
 fun PdfEntity.title(): String =
-    name.replace(Regex("\\.pdf$", RegexOption.IGNORE_CASE), "").replace('_', ' ').trim()
+    label?.takeIf { it.isNotBlank() }
+        ?: name.replace(Regex("\\.pdf$", RegexOption.IGNORE_CASE), "").replace('_', ' ').trim()
+
+private val numChunk = Regex("\\d+|\\D+")
+
+/** Sorts by title the way people expect: "Lecture 2" comes before "Lecture 10". */
+fun sortNatural(list: List<PdfEntity>): List<PdfEntity> {
+    val keyed = list.map { it to numChunk.findAll(it.title().lowercase()).map { m -> m.value }.toList() }
+    return keyed.sortedWith(Comparator<Pair<PdfEntity, List<String>>> { x, y -> compareChunks(x.second, y.second) }).map { it.first }
+}
+
+private fun compareChunks(a: List<String>, b: List<String>): Int {
+    val n = minOf(a.size, b.size)
+    for (i in 0 until n) {
+        val p = a[i]; val q = b[i]
+        val c = if (p[0].isDigit() && q[0].isDigit()) {
+            val pn = p.trimStart('0'); val qn = q.trimStart('0')
+            if (pn.length != qn.length) pn.length - qn.length else pn.compareTo(qn)
+        } else p.compareTo(q)
+        if (c != 0) return c
+    }
+    return a.size - b.size
+}
+
+/** Folder picker that asks for edit access, so Shelf can rename and delete the real files. */
+class PickTree : ActivityResultContracts.OpenDocumentTree() {
+    override fun createIntent(context: Context, input: Uri?): Intent =
+        super.createIntent(context, input).addFlags(
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+        )
+}
+
+enum class PdfMenuAction { Rename, Move, Remove, Delete }
+
+sealed interface PdfDlg {
+    class Rename(val pdf: PdfEntity) : PdfDlg
+    class Move(val ids: List<Long>) : PdfDlg
+    /** [title] is only used when a single PDF is being deleted. */
+    class Delete(val ids: List<Long>, val title: String) : PdfDlg
+}
 
 fun formatSize(b: Long): String = when {
     b >= 1_048_576 -> String.format(Locale.US, "%.1f MB", b / 1_048_576.0)
@@ -72,10 +121,42 @@ class FolderStats(pdfs: List<PdfEntity>, folders: List<FolderEntity>) {
 
 @Composable
 fun Overline(text: String, modifier: Modifier = Modifier, color: Color = LocalPal.current.soft) {
-    Text(
-        text.uppercase(Locale.getDefault()), modifier = modifier, color = color,
-        fontSize = 11.sp, letterSpacing = 1.2.sp, fontWeight = FontWeight.SemiBold
+    Text(text, modifier = modifier, color = color, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+}
+
+/** The Shelf mark: three books on a shelf. The artwork has built-in padding, so it is drawn a little larger than its box. */
+@Composable
+fun LogoMark(size: androidx.compose.ui.unit.Dp = 36.dp) {
+    Image(
+        painterResource(R.drawable.ic_logo_fg), "Shelf",
+        Modifier.size(size).graphicsLayer { scaleX = 1.5f; scaleY = 1.5f }
     )
+}
+
+@Composable
+fun SearchPill(modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val pal = LocalPal.current
+    Row(
+        modifier.height(40.dp).clip(RoundedCornerShape(20.dp)).background(pal.chip).clickable(onClick = onClick).padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Rounded.Search, null, tint = pal.soft, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(8.dp))
+        Text("Search PDFs", color = pal.soft, fontSize = 15.sp, maxLines = 1)
+    }
+}
+
+/** Logo, name and search in one row. Pass null for [onSearch] on screens with nothing to search. */
+@Composable
+fun AppHeader(onSearch: (() -> Unit)?) {
+    val pal = LocalPal.current
+    Row(Modifier.fillMaxWidth().height(60.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        LogoMark(36.dp)
+        Spacer(Modifier.width(2.dp))
+        Text("Shelf", fontFamily = Serif, fontStyle = FontStyle.Italic, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = pal.accent)
+        Spacer(Modifier.width(14.dp))
+        if (onSearch != null) SearchPill(Modifier.weight(1f), onSearch) else Spacer(Modifier.weight(1f))
+    }
 }
 
 @Composable
@@ -102,28 +183,30 @@ fun Thumb(pdf: PdfEntity, modifier: Modifier = Modifier) {
 @Composable
 fun PdfRow(
     pdf: PdfEntity, place: String?, selecting: Boolean, selected: Boolean,
-    onClick: () -> Unit, onLong: () -> Unit, onFav: () -> Unit
+    onClick: () -> Unit, onLong: () -> Unit, onFav: () -> Unit,
+    onMore: ((PdfMenuAction) -> Unit)? = null
 ) {
     val pal = LocalPal.current
-    val started = pdf.pageCount > 0 && pdf.lastPage > 0
+    val started = pdf.pageCount > 0 && pdf.lastPage > 0 && !pdf.missing
+    var menu by remember { mutableStateOf(false) }
     val meta = listOfNotNull(
-        place, formatSize(pdf.size),
+        place, if (pdf.missing) "File not found" else formatSize(pdf.size),
         if (started) "p. ${pdf.lastPage + 1} of ${pdf.pageCount}" else null
     ).joinToString(" · ")
     Row(
         Modifier.fillMaxWidth()
             .background(if (selected) pal.accent.copy(alpha = 0.10f) else Color.Transparent)
             .combinedClickable(onClick = onClick, onLongClick = onLong)
-            .padding(start = 16.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+            .padding(start = 16.dp, end = 2.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Thumb(pdf, Modifier.size(46.dp, 62.dp))
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Text(pdf.title(), maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, color = pal.ink)
+            Text(pdf.title(), maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, color = if (pdf.missing) pal.soft else pal.ink)
             Spacer(Modifier.height(3.dp))
-            Text(meta, fontSize = 12.sp, color = pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (started) { Spacer(Modifier.height(7.dp)); ReadBar((pdf.lastPage + 1f) / pdf.pageCount, Modifier.padding(end = 24.dp)) }
+            Text(meta, fontSize = 12.sp, color = if (pdf.missing) pal.accent else pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (started) { Spacer(Modifier.height(7.dp)); ReadBar((pdf.lastPage + 1f) / pdf.pageCount, Modifier.padding(end = 12.dp)) }
         }
         if (selecting) {
             Box(Modifier.padding(horizontal = 12.dp).size(24.dp).clip(CircleShape)
@@ -133,12 +216,23 @@ fun PdfRow(
                 if (selected) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp))
             }
         } else {
-            IconButton(onClick = onFav) {
+            IconButton(onClick = onFav, modifier = Modifier.size(40.dp)) {
                 Icon(
                     if (pdf.favorite) Icons.Rounded.Star else Icons.Rounded.StarBorder, "Favorite",
                     tint = if (pdf.favorite) pal.hi else pal.soft.copy(alpha = 0.6f)
                 )
             }
+            if (onMore != null) {
+                Box {
+                    IconButton(onClick = { menu = true }, modifier = Modifier.size(40.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.soft) }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onMore(PdfMenuAction.Rename) })
+                        DropdownMenuItem(text = { Text("Move to…") }, onClick = { menu = false; onMore(PdfMenuAction.Move) })
+                        DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { menu = false; onMore(PdfMenuAction.Remove) })
+                        DropdownMenuItem(text = { Text("Delete from phone", color = pal.accent) }, onClick = { menu = false; onMore(PdfMenuAction.Delete) })
+                    }
+                }
+            } else Spacer(Modifier.width(8.dp))
         }
     }
 }
@@ -256,5 +350,44 @@ private fun PickRow(label: String, depth: Int, tone: Color, onClick: () -> Unit)
         Icon(Icons.Rounded.Folder, null, tint = tone, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(10.dp))
         Text(label, color = pal.ink, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+fun RenameDialog(initial: String, onDismiss: () -> Unit, onOk: (String) -> Unit) {
+    val pal = LocalPal.current
+    var text by remember { mutableStateOf(TextFieldValue(initial, TextRange(0, initial.length))) }
+    val fr = remember { FocusRequester() }
+    LaunchedEffect(Unit) { fr.requestFocus() }
+    AlertDialog(
+        onDismissRequest = onDismiss, containerColor = pal.surface,
+        title = { Text("Rename PDF", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
+        text = { OutlinedTextField(text, { text = it }, singleLine = true, modifier = Modifier.fillMaxWidth().focusRequester(fr)) },
+        confirmButton = { TextButton(enabled = text.text.isNotBlank(), onClick = { onOk(text.text.trim()) }) { Text("Rename") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+/** One place for every PDF dialog, so Library, Recent, Saved and Search all behave the same. */
+@Composable
+fun PdfDialogHost(vm: LibraryVm) {
+    val pal = LocalPal.current
+    val folders by vm.folders.collectAsState()
+    when (val d = vm.pdfDialog) {
+        is PdfDlg.Rename -> RenameDialog(d.pdf.title(), { vm.pdfDialog = null }) { n -> vm.renamePdf(d.pdf, n); vm.pdfDialog = null }
+        is PdfDlg.Move -> FolderPicker(
+            folders, emptySet(), if (d.ids.size == 1) "Move to" else "Move ${d.ids.size} PDFs to",
+            { vm.movePdfs(d.ids, it); vm.selection.clear(); vm.pdfDialog = null }, { vm.pdfDialog = null }
+        )
+        is PdfDlg.Delete -> AlertDialog(
+            onDismissRequest = { vm.pdfDialog = null }, containerColor = pal.surface,
+            title = {
+                Text(if (d.ids.size == 1) "Delete “${d.title}”?" else "Delete ${d.ids.size} PDFs?", fontFamily = Serif, fontWeight = FontWeight.SemiBold)
+            },
+            text = { Text("This permanently deletes the file from your phone and can't be undone. To keep the file, choose Remove from Shelf instead.") },
+            confirmButton = { TextButton(onClick = { vm.deleteFromPhone(d.ids); vm.pdfDialog = null }) { Text("Delete", color = pal.accent) } },
+            dismissButton = { TextButton(onClick = { vm.pdfDialog = null }) { Text("Cancel") } }
+        )
+        null -> {}
     }
 }

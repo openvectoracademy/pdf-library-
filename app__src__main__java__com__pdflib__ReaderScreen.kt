@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.DragInteraction
@@ -25,7 +26,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
@@ -34,6 +37,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -136,48 +140,88 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
     val here = bms.firstOrNull { it.page == current }
 
     val hScroll = rememberScrollState()
+    val maxZoom = 4f
+    val density = LocalDensity.current
+    val sysTop = WindowInsets.systemBars.getTop(density)
+    val gapPx = with(density) { 6.dp.toPx() }
+
+    // While two fingers are down the whole view is scaled live around the spot where they first touched (cheap).
+    // When they lift, the pages re-render sharply at the new size and the scroll position is set so that
+    // the same spot of the page stays under your fingers.
     var pinch by remember { mutableFloatStateOf(1f) }
-    val maxZoom = 3.5f
+    var pinchOrigin by remember { mutableStateOf(Offset.Zero) }
+    var pinchShift by remember { mutableStateOf(Offset.Zero) }
+
+    fun applyZoom(target: Float, from: Offset, to: Offset, viewW: Float) {
+        val old = zoom
+        val z = target.coerceIn(1f, maxZoom)
+        pinch = 1f; pinchShift = Offset.Zero
+        if (abs(z - old) < 0.01f || viewW <= 0f) return
+        val oldW = viewW * old
+        val newW = viewW * z
+        // Where the page content sits under the fingers now, measured in page coordinates...
+        val scrolled = pageTop(ratios, oldW, gapPx, listState.firstVisibleItemIndex) + listState.firstVisibleItemScrollOffset
+        val contentY = (scrolled + from.y - sysTop).coerceAtLeast(0f)
+        val j = pageAt(ratios, oldW, gapPx, contentY)
+        val localY = (contentY - pageTop(ratios, oldW, gapPx, j)).coerceAtLeast(0f)
+        // ...and where it will be once every page is wider (page heights scale, the gaps between pages don't).
+        val newContentY = pageTop(ratios, newW, gapPx, j) + localY * (newW / oldW)
+        val newScroll = (newContentY - (to.y - sysTop)).coerceAtLeast(0f)
+        val m = pageAt(ratios, newW, gapPx, newScroll)
+        val offsetInPage = (newScroll - pageTop(ratios, newW, gapPx, m)).roundToInt().coerceAtLeast(0)
+        val x = ((hScroll.value + from.x) * (z / old) - to.x).roundToInt().coerceAtLeast(0)
+        zoom = z
+        scope.launch {
+            withFrameNanos { }
+            withFrameNanos { }
+            hScroll.scrollTo(x)
+            listState.scrollToItem(m, offsetInPage)
+        }
+    }
 
     BoxWithConstraints(
         Modifier.fillMaxSize()
-            // Two-finger pinch: scales the view live (cheap), re-renders the pages sharply once you let go.
             .pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
+                    var pinching = false
+                    var origin = Offset.Zero
                     do {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
-                        if (event.changes.size >= 2) {
+                        if (event.changes.count { it.pressed } >= 2) {
+                            val centre = event.calculateCentroid(useCurrent = true)
+                            if (!pinching) { pinching = true; origin = centre; pinchOrigin = centre }
                             val z = event.calculateZoom()
                             if (z != 1f) pinch = (pinch * z).coerceIn(1f / zoom, maxZoom / zoom)
-                            event.changes.forEach { it.consume() }
+                            pinchShift = centre - origin
                         }
+                        // Once a pinch has begun, lifting one finger must not turn the other into a scroll.
+                        if (pinching) event.changes.forEach { it.consume() }
                     } while (event.changes.any { it.pressed })
-                    if (pinch != 1f) {
-                        val old = zoom
-                        val newZ = (zoom * pinch).coerceIn(1f, maxZoom)
-                        val viewW = size.width
-                        val frac = (hScroll.value + viewW / 2f) / (viewW * old)
-                        zoom = newZ
-                        pinch = 1f
-                        scope.launch {
-                            withFrameNanos { }
-                            withFrameNanos { }
-                            hScroll.scrollTo((frac * viewW * newZ - viewW / 2f).toInt().coerceAtLeast(0))
-                        }
-                    }
+                    if (pinching) applyZoom(zoom * pinch, origin, origin + pinchShift, size.width.toFloat())
                 }
             }
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = { chrome = !chrome },
-                    onDoubleTap = { zoom = if (zoom < 1.3f) 2f else if (zoom < 2.6f) 3.2f else 1f }
+                    onDoubleTap = { p ->
+                        val target = if (zoom < 1.3f) 2.2f else if (zoom < 3f) 3.6f else 1f
+                        applyZoom(target, p, p, size.width.toFloat())
+                    }
                 )
             }
     ) {
-        val pageW = (constraints.maxWidth * zoom).toInt().coerceAtMost(2800)
+        val pageW = (constraints.maxWidth * zoom).toInt().coerceIn(1, 2400)
         val listWidth = this.maxWidth * zoom
-        Box(Modifier.fillMaxSize().graphicsLayer { scaleX = pinch; scaleY = pinch }.horizontalScroll(hScroll)) {
+        Box(
+            Modifier.fillMaxSize()
+                .graphicsLayer {
+                    scaleX = pinch; scaleY = pinch
+                    if (size.width > 0f && size.height > 0f) transformOrigin = TransformOrigin(pinchOrigin.x / size.width, pinchOrigin.y / size.height)
+                    translationX = pinchShift.x; translationY = pinchShift.y
+                }
+                .horizontalScroll(hScroll)
+        ) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.width(listWidth).fillMaxHeight(),
@@ -255,9 +299,29 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
     }
 }
 
+/** Top edge of page [index] inside a column of pages that are [w] px wide (heights follow each page's own ratio). */
+private fun pageTop(ratios: List<Float>, w: Float, gap: Float, index: Int): Float {
+    var y = 0f
+    for (i in 0 until index.coerceAtMost(ratios.size)) y += w * ratios[i] + gap
+    return y
+}
+
+/** Index of the page that contains vertical position [y]. */
+private fun pageAt(ratios: List<Float>, w: Float, gap: Float, y: Float): Int {
+    var top = 0f
+    for (i in ratios.indices) {
+        val h = w * ratios[i]
+        if (y < top + h + gap) return i
+        top += h + gap
+    }
+    return (ratios.size - 1).coerceAtLeast(0)
+}
+
 @Composable
 private fun PageView(doc: PdfDoc, index: Int, ratio: Float, widthPx: Int, invert: Boolean) {
-    val bmp by produceState<Bitmap?>(null, doc, index, widthPx) { value = doc.render(index, widthPx) }
+    // Keep showing the previous (softer) render while a sharper one is being made, so zooming never flashes white.
+    var bmp by remember(doc, index) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(doc, index, widthPx) { doc.render(index, widthPx)?.let { bmp = it } }
     Box(Modifier.fillMaxWidth().aspectRatio(1f / ratio).background(if (invert) Color(0xFF101010) else Color.White)) {
         val b = bmp
         if (b != null) Image(

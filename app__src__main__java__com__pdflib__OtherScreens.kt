@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.pdflib
 
 import android.net.Uri
@@ -42,10 +44,7 @@ fun PdfListScreen(vm: LibraryVm, title: String, docs: List<PdfEntity>, emptyTitl
     val folders by vm.folders.collectAsState()
     val paths = remember(folders) { folderPaths(folders) }
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Spacer(Modifier.weight(1f))
-            IconButton(onClick = { vm.searching = true }) { Icon(Icons.Rounded.Search, "Search", tint = pal.ink) }
-        }
+        AppHeader(onSearch = { vm.searching = true })
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
             item {
                 Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp)) {
@@ -56,7 +55,8 @@ fun PdfListScreen(vm: LibraryVm, title: String, docs: List<PdfEntity>, emptyTitl
             if (docs.isEmpty()) item { Hint(emptyTitle, emptyBody) }
             items(docs, key = { it.id }) { p ->
                 PdfRow(p, p.folderId?.let { paths[it] } ?: "Unsorted", false, false,
-                    onClick = { vm.openReader(p.id) }, onLong = {}, onFav = { vm.setFavorite(listOf(p.id), !p.favorite) })
+                    onClick = { vm.openReader(p.id) }, onLong = {}, onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
+                    onMore = { a -> vm.rowAction(p, a) })
             }
         }
     }
@@ -78,7 +78,7 @@ fun SearchScreen(vm: LibraryVm) {
         if (tokens.isEmpty()) emptyList() else folders.filter { f -> val n = f.name.lowercase(); tokens.all { it in n } }.take(20)
     }
     val found = remember(tokens, pdfs) {
-        if (tokens.isEmpty()) emptyList() else pdfs.filter { p -> val n = p.name.lowercase(); tokens.all { it in n } }.take(200)
+        if (tokens.isEmpty()) emptyList() else pdfs.filter { p -> val n = (p.title() + " " + p.name).lowercase(); tokens.all { it in n } }.take(200)
     }
 
     Column(Modifier.fillMaxSize().background(pal.bg).pointerInput(Unit) { detectTapGestures { } }.statusBarsPadding().imePadding()) {
@@ -116,7 +116,8 @@ fun SearchScreen(vm: LibraryVm) {
                 item { Overline("PDFs · ${found.size}", Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp)) }
                 items(found, key = { it.id }) { p ->
                     PdfRow(p, p.folderId?.let { paths[it] } ?: "Unsorted", false, false,
-                        onClick = { vm.openReader(p.id) }, onLong = {}, onFav = { vm.setFavorite(listOf(p.id), !p.favorite) })
+                        onClick = { vm.openReader(p.id) }, onLong = {}, onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
+                        onMore = { a -> vm.rowAction(p, a) })
                 }
             }
         }
@@ -147,24 +148,42 @@ fun SettingsScreen(vm: LibraryVm) {
     val pdfs by vm.pdfs.collectAsState()
     val folders by vm.folders.collectAsState()
     val bms by vm.bookmarks.collectAsState()
-    val add = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { u -> if (u != null) vm.addSource(u) }
+    val removed by vm.hidden.collectAsState()
+    var showRemoved by remember { mutableStateOf(false) }
+    val add = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) vm.addSource(u) }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { u -> if (u != null) vm.exportBackup(u) }
     val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) vm.importBackup(u) }
 
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
-        item { Text("Settings", fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 36.sp, color = pal.ink, modifier = Modifier.padding(start = 16.dp, top = 24.dp, bottom = 12.dp)) }
+        item { AppHeader(onSearch = null) }
+        item { Text("Settings", fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 36.sp, color = pal.ink, modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 12.dp)) }
 
         item { Overline("PDF folders", Modifier.padding(start = 16.dp, top = 12.dp, bottom = 2.dp)) }
         items(vm.sources, key = { it.toString() }) { u ->
-            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            val canEdit = u.toString() in vm.writable
+            Row(
+                Modifier.fillMaxWidth().clickable(enabled = !canEdit) { add.launch(null) }.padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Icon(Icons.Rounded.Folder, null, tint = pal.soft, modifier = Modifier.size(22.dp))
                 Spacer(Modifier.width(16.dp))
-                Text(treeLabel(u), Modifier.weight(1f), fontSize = 15.sp, color = pal.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column(Modifier.weight(1f)) {
+                    Text(treeLabel(u), fontSize = 15.sp, color = pal.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        if (canEdit) "Can rename and delete files" else "Read-only. Tap, then choose this folder again to allow renaming and deleting.",
+                        fontSize = 12.sp, lineHeight = 16.sp, color = if (canEdit) pal.soft else pal.accent
+                    )
+                }
                 IconButton(onClick = { vm.removeSource(u) }) { Icon(Icons.Rounded.Close, "Remove", tint = pal.soft) }
             }
         }
         item { SettingRow(Icons.Rounded.Add, "Add a folder", "Subfolders are included automatically", pal.accent) { add.launch(null) } }
         item { SettingRow(Icons.Rounded.Refresh, if (vm.scanning) "Scanning… ${vm.scanFound} found" else "Rescan now", "Also runs every time you open Shelf") { vm.rescan() } }
+
+        item { Overline("Your library", Modifier.padding(start = 16.dp, top = 24.dp, bottom = 2.dp)) }
+        item {
+            SettingRow(Icons.Rounded.VisibilityOff, "Removed PDFs", if (removed.isEmpty()) "Nothing removed" else "${removed.size} hidden from Shelf, files untouched") { showRemoved = true }
+        }
 
         item { Overline("Backup", Modifier.padding(start = 16.dp, top = 24.dp, bottom = 2.dp)) }
         item {
@@ -178,6 +197,27 @@ fun SettingsScreen(vm: LibraryVm) {
         item {
             Text("${pdfs.size} PDFs · ${folders.size} folders · ${bms.size} bookmarks\n\nShelf works fully offline. Your PDFs stay where they are, and only the organisation is stored on this phone.",
                 fontSize = 13.sp, lineHeight = 19.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 16.dp))
+        }
+    }
+
+    if (showRemoved) ModalBottomSheet(onDismissRequest = { showRemoved = false }, containerColor = pal.surface) {
+        Column(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
+            Row(Modifier.padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Removed from Shelf", Modifier.weight(1f), fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = pal.ink)
+                if (removed.isNotEmpty()) TextButton(onClick = { vm.restoreToShelf(removed.map { it.id }) }) { Text("Restore all", color = pal.accent) }
+            }
+            if (removed.isEmpty()) {
+                Text("Nothing here. PDFs you remove from Shelf wait here until you restore them. The files themselves are never touched.",
+                    fontSize = 14.sp, lineHeight = 20.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+            }
+            LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                items(removed, key = { it.id }) { p ->
+                    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(p.title(), Modifier.weight(1f).padding(vertical = 12.dp), fontSize = 15.sp, color = pal.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        TextButton(onClick = { vm.restoreToShelf(listOf(p.id)) }) { Text("Restore", color = pal.accent) }
+                    }
+                }
+            }
         }
     }
 }

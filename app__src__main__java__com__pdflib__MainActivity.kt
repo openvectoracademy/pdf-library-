@@ -1,26 +1,31 @@
 package com.pdflib
 
 import android.os.Bundle
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,7 +40,10 @@ private fun Root(vm: LibraryVm = viewModel()) {
     val pal = LocalPal.current
     val pdfs by vm.pdfs.collectAsState()
     val recent = remember(pdfs) { pdfs.filter { it.lastOpened > 0 }.sortedByDescending { it.lastOpened }.take(100) }
-    val saved = remember(pdfs) { pdfs.filter { it.favorite } }
+    val saved = remember(pdfs) { sortNatural(pdfs.filter { it.favorite }) }
+
+    // From Recent, Saved or Settings, Back goes to the Library before it leaves the app.
+    BackHandler(enabled = vm.tab != 0) { vm.tab = 0 }
 
     Box(Modifier.fillMaxSize().background(pal.bg)) {
         Column(Modifier.fillMaxSize()) {
@@ -51,6 +59,24 @@ private fun Root(vm: LibraryVm = viewModel()) {
         }
         if (vm.searching) SearchScreen(vm)
         vm.readerId?.let { ReaderScreen(vm, it) }
+        PdfDialogHost(vm)
+        vm.undo?.let { UndoBar(vm, it, Modifier.align(Alignment.BottomCenter)) }
+    }
+}
+
+@Composable
+private fun UndoBar(vm: LibraryVm, note: UndoNote, modifier: Modifier) {
+    val pal = LocalPal.current
+    LaunchedEffect(note) { delay(5000); if (vm.undo === note) vm.undo = null }
+    Row(
+        modifier.navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 72.dp).fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp)).background(pal.ink).padding(start = 16.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(note.message, Modifier.weight(1f).padding(vertical = 14.dp), color = pal.bg, fontSize = 14.sp)
+        TextButton(onClick = { val act = note.action; vm.undo = null; act() }) {
+            Text("Undo", color = pal.bg, fontWeight = FontWeight.Bold)
+        }
     }
 }
 

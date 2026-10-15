@@ -2,6 +2,8 @@ package com.pdflib
 
 import android.content.Context
 import androidx.room.*
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "folders", indices = [Index("parentId")])
@@ -24,7 +26,13 @@ data class PdfEntity(
     val favorite: Boolean = false,
     val lastPage: Int = 0,
     val pageCount: Int = 0,
-    val lastOpened: Long = 0
+    val lastOpened: Long = 0,
+    /** A name chosen inside Shelf. Used when the file on the phone can't be renamed (read-only access). */
+    val label: String? = null,
+    /** "Removed from Shelf": hidden everywhere but kept, so a rescan never brings it back and Undo/Restore is lossless. */
+    @ColumnInfo(defaultValue = "0") val hidden: Boolean = false,
+    /** The file wasn't found on the last scan. The row (folder, stars, bookmarks, progress) is kept, never auto-deleted. */
+    @ColumnInfo(defaultValue = "0") val missing: Boolean = false
 )
 
 @Entity(
@@ -64,24 +72,41 @@ interface LibDao {
     @Query("UPDATE pdfs SET lastPage=:page, pageCount=:count WHERE id=:id") suspend fun progress(id: Long, page: Int, count: Int)
     @Query("UPDATE pdfs SET lastOpened=:t WHERE id=:id") suspend fun touch(id: Long, t: Long)
 
+    @Query("UPDATE pdfs SET hidden=:h WHERE id IN (:ids)") suspend fun setHidden(ids: List<Long>, h: Boolean)
+    @Query("UPDATE pdfs SET missing=:m WHERE id IN (:ids)") suspend fun setMissing(ids: List<Long>, m: Boolean)
+    @Query("UPDATE pdfs SET label=:label WHERE id=:id") suspend fun setLabel(id: Long, label: String?)
+    @Query("UPDATE pdfs SET uri=:uri, name=:name, size=:size, modified=:modified, missing=0 WHERE id=:id")
+    suspend fun relink(id: Long, uri: String, name: String, size: Long, modified: Long)
+    @Query("DELETE FROM pdfs WHERE id IN (:ids)") suspend fun deleteByIds(ids: List<Long>)
+
     @Insert suspend fun addBookmark(b: BookmarkEntity)
     @Query("DELETE FROM bookmarks WHERE id=:id") suspend fun deleteBookmark(id: Long)
 
     @Query("UPDATE pdfs SET folderId=NULL") suspend fun resetPdfFolders()
     @Query("DELETE FROM bookmarks") suspend fun clearBookmarks()
     @Query("DELETE FROM folders") suspend fun clearFolders()
-    @Query("UPDATE pdfs SET folderId=:folder, favorite=:fav, lastPage=:page, pageCount=:count WHERE id=:id")
-    suspend fun restorePdf(id: Long, folder: Long?, fav: Boolean, page: Int, count: Int)
+    @Query("UPDATE pdfs SET folderId=:folder, favorite=:fav, lastPage=:page, pageCount=:count, label=:label, hidden=:hidden WHERE id=:id")
+    suspend fun restorePdf(id: Long, folder: Long?, fav: Boolean, page: Int, count: Int, label: String?, hidden: Boolean)
 }
 
-@Database(entities = [FolderEntity::class, PdfEntity::class, BookmarkEntity::class], version = 1, exportSchema = false)
+@Database(entities = [FolderEntity::class, PdfEntity::class, BookmarkEntity::class], version = 2, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): LibDao
 
     companion object {
         @Volatile private var inst: AppDb? = null
         fun get(c: Context): AppDb = inst ?: synchronized(this) {
-            inst ?: Room.databaseBuilder(c.applicationContext, AppDb::class.java, "library.db").build().also { inst = it }
+            inst ?: Room.databaseBuilder(c.applicationContext, AppDb::class.java, "library.db")
+                .addMigrations(MIGRATION_1_2) // never a destructive fallback: folders, stars and bookmarks must survive updates
+                .build().also { inst = it }
         }
+    }
+}
+
+private val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE pdfs ADD COLUMN label TEXT")
+        db.execSQL("ALTER TABLE pdfs ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE pdfs ADD COLUMN missing INTEGER NOT NULL DEFAULT 0")
     }
 }

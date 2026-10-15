@@ -16,10 +16,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import org.json.JSONArray
 import org.json.JSONObject
+
+/** A short "done · Undo" message shown above the bottom bar. */
+class UndoNote(val message: String, val action: () -> Unit)
 
 class LibraryVm(app: Application) : AndroidViewModel(app) {
     private val ctx: Context = app.applicationContext
@@ -29,7 +33,10 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
 
     var loaded by mutableStateOf(false)
     val folders = dao.folders().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-    val pdfs = dao.pdfs().onEach { loaded = true }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    private val allPdfs = dao.pdfs().onEach { loaded = true }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    /** What the app shows: everything except PDFs the user removed from Shelf. */
+    val pdfs = allPdfs.map { l -> l.filter { !it.hidden } }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val hidden = allPdfs.map { l -> l.filter { it.hidden } }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val bookmarks = dao.bookmarks().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // navigation + UI state
@@ -44,6 +51,12 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     var scanning by mutableStateOf(false)
     var scanFound by mutableIntStateOf(0)
     var sources by mutableStateOf<List<Uri>>(emptyList())
+    var writable by mutableStateOf<Set<String>>(emptySet())
+    private var again = false
+
+    // dialogs + undo
+    var pdfDialog by mutableStateOf<PdfDlg?>(null)
+    var undo by mutableStateOf<UndoNote?>(null)
 
     var invert by mutableStateOf(prefs.getBoolean("invert", false))
     fun updateInvert(v: Boolean) { invert = v; prefs.edit().putBoolean("invert", v).apply() }
@@ -76,52 +89,94 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
 
     // ---------- sources & scanning ----------
     fun refreshSources() {
-        sources = ctx.contentResolver.persistedUriPermissions
-            .filter { it.isReadPermission && DocumentsContract.isTreeUri(it.uri) }
-            .map { it.uri }
+        val perms = ctx.contentResolver.persistedUriPermissions.filter { it.isReadPermission && DocumentsContract.isTreeUri(it.uri) }
+        sources = perms.map { it.uri }
+        writable = perms.filter { it.isWritePermission }.mapTo(HashSet<String>()) { it.uri.toString() }
+    }
+
+    /** Asks for edit access too (needed to rename or delete real files); falls back to read-only. */
+    private fun grant(uri: Uri) {
+        val rw = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        try { ctx.contentResolver.takePersistableUriPermission(uri, rw) }
+        catch (e: Exception) {
+            try { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (e2: Exception) { }
+        }
     }
 
     fun addSource(uri: Uri) {
-        try { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (e: SecurityException) { }
+        grant(uri)
         refreshSources(); rescan()
     }
 
+    /** Stops watching a folder. Its PDFs keep their folders, stars and bookmarks; they are just flagged as not found. */
     fun removeSource(uri: Uri) {
-        try { ctx.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (e: Exception) { }
+        try {
+            ctx.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        } catch (e: Exception) { }
         refreshSources()
+        viewModelScope.launch(Dispatchers.IO) {
+            val prefix = uri.toString() + "/document/"
+            val ids = dao.pdfsOnce().filter { it.uri.startsWith(prefix) }.map { it.id }
+            ids.chunked(400).forEach { dao.setMissing(it, true) }
+        }
     }
 
+    /**
+     * Syncs the library with the folders on the phone. It only ever ADDS, RELINKS or FLAGS rows. It never deletes one,
+     * so a flaky scan (SD card out, permission hiccup) can't wipe your folders, stars, bookmarks or reading progress.
+     */
     fun rescan() {
-        if (scanning) return
+        if (scanning) { again = true; return }
         refreshSources()
         scanning = true; scanFound = 0
         val roots = sources
+        val prefixes = roots.map { it.toString() + "/document/" }
         viewModelScope.launch(Dispatchers.IO) {
             var base = 0
             for (root in roots) {
                 try {
                     val found = Scanner.scan(ctx, root) { scanFound = base + it }
                     base += found.size
-                    val rows = dao.pdfsOnce()
-                    val known = rows.mapTo(HashSet()) { it.uri }
-                    val seen = found.mapTo(HashSet()) { it.uri }
                     val prefix = root.toString() + "/document/"
-                    // A file that was renamed/moved inside this source keeps its folder, stars and progress.
-                    val gone = rows.filter { it.uri.startsWith(prefix) && it.uri !in seen }
-                    val goneByKey = gone.groupBy { "${it.name}|${it.size}" }
-                    val fresh = found.filter { it.uri !in known }.map { f ->
-                        val old = goneByKey["${f.name}|${f.size}"]?.firstOrNull()
-                        PdfEntity(
-                            uri = f.uri, name = f.name, size = f.size, modified = f.modified,
-                            folderId = old?.folderId, favorite = old?.favorite ?: false,
-                            lastPage = old?.lastPage ?: 0, pageCount = old?.pageCount ?: 0, lastOpened = old?.lastOpened ?: 0
-                        )
+                    val rows = dao.pdfsOnce()
+                    val known = rows.mapTo(HashSet<String>()) { it.uri }
+                    val seen = found.mapTo(HashSet<String>()) { it.uri }
+                    val inRoot = rows.filter { it.uri.startsWith(prefix) }
+
+                    // Files that are back: clear the "not found" flag.
+                    inRoot.filter { it.missing && it.uri in seen }.map { it.id }.chunked(400).forEach { dao.setMissing(it, false) }
+                    // An empty result is more likely a failed scan than an emptied folder: change nothing.
+                    if (found.isEmpty()) continue
+
+                    // A file that was moved or renamed outside Shelf keeps its row: same folder, stars, bookmarks and progress.
+                    // Rows from a folder you removed (or single files you added) can be matched too.
+                    val candidates = rows.filter { r ->
+                        r.uri !in seen && (r.uri.startsWith(prefix) || prefixes.none { r.uri.startsWith(it) })
+                    }
+                    val used = HashSet<Long>()
+                    val fresh = ArrayList<PdfEntity>()
+                    for (f in found) {
+                        if (f.uri in known) continue
+                        val old = candidates.firstOrNull { it.id !in used && it.name == f.name && it.size == f.size }
+                            ?: candidates.firstOrNull { it.id !in used && f.size > 0 && it.size == f.size && it.modified == f.modified }
+                        if (old != null) {
+                            used.add(old.id)
+                            dao.relink(old.id, f.uri, f.name, f.size, f.modified)
+                        } else {
+                            fresh.add(PdfEntity(uri = f.uri, name = f.name, size = f.size, modified = f.modified))
+                        }
                     }
                     fresh.chunked(200).forEach { dao.insertPdfs(it) }
-                    gone.map { it.uri }.chunked(400).forEach { dao.deleteByUris(it) }
+
+                    // Gone from the phone: keep the row, flag it.
+                    inRoot.filter { it.uri !in seen && it.id !in used && !it.missing }.map { it.id }
+                        .chunked(400).forEach { dao.setMissing(it, true) }
                 } catch (e: Exception) { }
             }
-            withContext(Dispatchers.Main) { scanning = false }
+            withContext(Dispatchers.Main) {
+                scanning = false
+                if (again) { again = false; rescan() }
+            }
         }
     }
 
@@ -131,7 +186,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         val fresh = ArrayList<PdfEntity>()
         val existing = ArrayList<Long>()
         for (u in uris) {
-            try { ctx.contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (e: Exception) { }
+            grant(u)
             val have = known[u.toString()]
             if (have != null) { existing.add(have.id); continue }
             var name = "document.pdf"; var size = 0L
@@ -143,7 +198,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
             fresh.add(PdfEntity(uri = u.toString(), name = name, size = size, modified = System.currentTimeMillis(), folderId = folderId))
         }
         fresh.chunked(200).forEach { dao.insertPdfs(it) }
-        existing.chunked(500).forEach { dao.movePdfs(it, folderId) }
+        existing.chunked(500).forEach { dao.movePdfs(it, folderId); dao.setHidden(it, false) }
         withContext(Dispatchers.Main) { toast("${uris.size} PDF" + (if (uris.size == 1) "" else "s") + " added") }
     }
 
@@ -167,6 +222,83 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     // ---------- pdfs ----------
     fun movePdfs(ids: List<Long>, target: Long?) = viewModelScope.launch { ids.chunked(500).forEach { dao.movePdfs(it, target) } }
     fun setFavorite(ids: List<Long>, fav: Boolean) = viewModelScope.launch { ids.chunked(500).forEach { dao.setFavorite(it, fav) } }
+    /** Opens the right dialog (or acts straight away) for the ⋮ menu on a PDF row. */
+    fun rowAction(p: PdfEntity, a: PdfMenuAction) {
+        when (a) {
+            PdfMenuAction.Rename -> pdfDialog = PdfDlg.Rename(p)
+            PdfMenuAction.Move -> pdfDialog = PdfDlg.Move(listOf(p.id))
+            PdfMenuAction.Remove -> removeFromShelf(listOf(p.id))
+            PdfMenuAction.Delete -> pdfDialog = PdfDlg.Delete(listOf(p.id), p.title())
+        }
+    }
+
+    /** Renames the real file when Shelf has edit access; otherwise renames it inside Shelf only. */
+    fun renamePdf(p: PdfEntity, newName: String) {
+        val wanted = newName.trim()
+        if (wanted.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val safe = wanted.replace(Regex("[\\\\/:*?\"<>|]"), "-").trim().ifEmpty { "document" }
+            val fileName = if (safe.endsWith(".pdf", true)) safe else "$safe.pdf"
+            var renamed: Uri? = null
+            try { renamed = DocumentsContract.renameDocument(ctx.contentResolver, Uri.parse(p.uri), fileName) } catch (e: Exception) { }
+            var ok = false
+            if (renamed != null) {
+                try {
+                    dao.relink(p.id, renamed.toString(), fileName, p.size, p.modified)
+                    dao.setLabel(p.id, null)
+                    ok = true
+                } catch (e: Exception) { }
+            }
+            if (ok) {
+                withContext(Dispatchers.Main) { toast("Renamed") }
+            } else {
+                dao.setLabel(p.id, wanted)
+                withContext(Dispatchers.Main) { toast("Renamed in Shelf. This file is read-only, so its name on your phone is unchanged.") }
+            }
+        }
+    }
+
+    /** Hides PDFs from Shelf without touching the files. Undo (or Settings › Removed PDFs) brings them back exactly as they were. */
+    fun removeFromShelf(ids: List<Long>) {
+        if (ids.isEmpty()) return
+        selection.clear()
+        viewModelScope.launch {
+            ids.chunked(500).forEach { dao.setHidden(it, true) }
+            val n = ids.size
+            undo = UndoNote(if (n == 1) "Removed from Shelf" else "$n PDFs removed from Shelf") { restoreToShelf(ids) }
+        }
+    }
+
+    fun restoreToShelf(ids: List<Long>) = viewModelScope.launch {
+        ids.chunked(500).forEach { dao.setHidden(it, false) }
+        undo = null
+    }
+
+    /** Permanently deletes the real files. Needs edit access to their folder. */
+    fun deleteFromPhone(ids: List<Long>) {
+        val targets = allPdfs.value.filter { it.id in ids }
+        selection.clear()
+        viewModelScope.launch(Dispatchers.IO) {
+            val done = ArrayList<Long>()
+            var failed = 0
+            for (p in targets) {
+                val gone = if (p.missing) true else try {
+                    DocumentsContract.deleteDocument(ctx.contentResolver, Uri.parse(p.uri))
+                } catch (e: Exception) { false }
+                if (gone) done.add(p.id) else failed++
+            }
+            done.chunked(400).forEach { dao.deleteByIds(it) }
+            withContext(Dispatchers.Main) {
+                when {
+                    failed == 0 && done.size == 1 -> toast("Deleted from your phone")
+                    failed == 0 -> toast("${done.size} PDFs deleted from your phone")
+                    else -> toast("Couldn't delete $failed PDF" + (if (failed == 1) "" else "s") +
+                        ". Open Settings and tap the folder to give Shelf edit access.")
+                }
+            }
+        }
+    }
+
     fun saveProgress(id: Long, page: Int, count: Int) = viewModelScope.launch { dao.progress(id, page, count) }
     fun toggleBookmark(pdfId: Long, page: Int, existing: BookmarkEntity?) = viewModelScope.launch {
         if (existing != null) dao.deleteBookmark(existing.id) else dao.addBookmark(BookmarkEntity(pdfId = pdfId, page = page))
@@ -183,10 +315,11 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                 f.forEach { a.put(JSONObject().put("id", it.id).put("name", it.name).put("parentId", it.parentId ?: JSONObject.NULL).put("color", it.color)) }
             })
             root.put("pdfs", JSONArray().also { a ->
-                p.filter { it.folderId != null || it.favorite || it.lastPage > 0 }.forEach {
+                p.filter { it.folderId != null || it.favorite || it.lastPage > 0 || it.label != null || it.hidden }.forEach {
                     a.put(JSONObject().put("uri", it.uri).put("name", it.name).put("size", it.size)
                         .put("folderId", it.folderId ?: JSONObject.NULL).put("favorite", it.favorite)
-                        .put("lastPage", it.lastPage).put("pageCount", it.pageCount))
+                        .put("lastPage", it.lastPage).put("pageCount", it.pageCount)
+                        .put("label", it.label ?: JSONObject.NULL).put("hidden", it.hidden))
                 }
             })
             root.put("bookmarks", JSONArray().also { a ->
@@ -224,7 +357,10 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                     val m = byUri[u] ?: byKey["${o.getString("name")}|${o.getLong("size")}"]?.firstOrNull() ?: continue
                     matched++
                     idByUri[u] = m.id
-                    dao.restorePdf(m.id, if (o.isNull("folderId")) null else o.getLong("folderId"), o.getBoolean("favorite"), o.getInt("lastPage"), o.getInt("pageCount"))
+                    dao.restorePdf(
+                        m.id, if (o.isNull("folderId")) null else o.getLong("folderId"), o.getBoolean("favorite"), o.getInt("lastPage"), o.getInt("pageCount"),
+                        if (o.isNull("label")) null else o.getString("label"), o.optBoolean("hidden", false)
+                    )
                 }
                 for (i in 0 until ba.length()) {
                     val o = ba.getJSONObject(i)
