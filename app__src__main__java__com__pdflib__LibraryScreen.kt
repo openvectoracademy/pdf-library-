@@ -197,21 +197,28 @@ fun LibraryScreen(vm: LibraryVm) {
                     }
 
                     if (current != null && subs.isEmpty() && docs.isEmpty()) item(key = "empty") {
-                        Hint("Nothing in here yet", "Use the buttons at the bottom right to add PDFs from storage here, or create a subfolder.")
+                        Hint("Nothing in here yet", "Tap + at the bottom right to add PDFs from your phone here, or to create a subfolder.")
                     }
                 }
             }
         }
 
         if (!selecting && !onboarding) {
-            Column(Modifier.align(Alignment.BottomEnd).padding(16.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                SmallFloatingActionButton(
-                    onClick = { pickFiles.launch(arrayOf("application/pdf")) }, containerColor = pal.surface, contentColor = pal.accent,
-                    shape = RoundedCornerShape(14.dp), modifier = Modifier.border(1.dp, pal.line, RoundedCornerShape(14.dp))
-                ) { Icon(Icons.Rounded.NoteAdd, "Add PDFs from storage") }
+            var add by remember { mutableStateOf(false) }
+            Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
                 FloatingActionButton(
-                    onClick = { dlg = Dlg.New }, containerColor = pal.accent, contentColor = Color.White, shape = RoundedCornerShape(18.dp)
-                ) { Icon(Icons.Rounded.CreateNewFolder, "New folder") }
+                    onClick = { add = true }, containerColor = pal.accent, contentColor = Color.White, shape = RoundedCornerShape(18.dp)
+                ) { Icon(Icons.Rounded.Add, "Add") }
+                DropdownMenu(expanded = add, onDismissRequest = { add = false }) {
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Rounded.CreateNewFolder, null, tint = pal.accent) },
+                        text = { Text("New folder") }, onClick = { add = false; dlg = Dlg.New }
+                    )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Rounded.NoteAdd, null, tint = pal.accent) },
+                        text = { Text("Add PDFs from phone") }, onClick = { add = false; pickFiles.launch(arrayOf("application/pdf")) }
+                    )
+                }
             }
         }
     }
