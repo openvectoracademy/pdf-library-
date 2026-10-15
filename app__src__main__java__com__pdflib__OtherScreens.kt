@@ -55,7 +55,7 @@ fun PdfListScreen(vm: LibraryVm, title: String, docs: List<PdfEntity>, emptyTitl
             if (docs.isEmpty()) item { Hint(emptyTitle, emptyBody) }
             items(docs, key = { it.id }) { p ->
                 PdfRow(p, p.folderId?.let { paths[it] } ?: "Unsorted", false, false,
-                    onClick = { vm.openReader(p.id) }, onLong = {}, onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
+                    onClick = { vm.openReader(p.id) }, onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
                     onMore = { a -> vm.rowAction(p, a) })
             }
         }
@@ -116,7 +116,7 @@ fun SearchScreen(vm: LibraryVm) {
                 item { Overline("PDFs · ${found.size}", Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp)) }
                 items(found, key = { it.id }) { p ->
                     PdfRow(p, p.folderId?.let { paths[it] } ?: "Unsorted", false, false,
-                        onClick = { vm.openReader(p.id) }, onLong = {}, onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
+                        onClick = { vm.openReader(p.id) }, onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
                         onMore = { a -> vm.rowAction(p, a) })
                 }
             }

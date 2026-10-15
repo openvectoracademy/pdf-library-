@@ -36,6 +36,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.Locale
@@ -52,6 +54,28 @@ private val numChunk = Regex("\\d+|\\D+")
 fun sortNatural(list: List<PdfEntity>): List<PdfEntity> {
     val keyed = list.map { it to numChunk.findAll(it.title().lowercase()).map { m -> m.value }.toList() }
     return keyed.sortedWith(Comparator<Pair<PdfEntity, List<String>>> { x, y -> compareChunks(x.second, y.second) }).map { it.first }
+}
+
+/** Library order: pinned first, then the order set by hand (if any), then natural A–Z for everything not yet placed by hand. */
+fun arrangePdfs(list: List<PdfEntity>): List<PdfEntity> {
+    val keyed = list.map { it to numChunk.findAll(it.title().lowercase()).map { m -> m.value }.toList() }
+    return keyed.sortedWith(Comparator<Pair<PdfEntity, List<String>>> { x, y ->
+        orderCompare(x.first.pinned, x.first.sortIndex, y.first.pinned, y.first.sortIndex).let { if (it != 0) it else compareChunks(x.second, y.second) }
+    }).map { it.first }
+}
+
+fun arrangeFolders(list: List<FolderEntity>): List<FolderEntity> {
+    val keyed = list.map { it to numChunk.findAll(it.name.lowercase()).map { m -> m.value }.toList() }
+    return keyed.sortedWith(Comparator<Pair<FolderEntity, List<String>>> { x, y ->
+        orderCompare(x.first.pinned, x.first.sortIndex, y.first.pinned, y.first.sortIndex).let { if (it != 0) it else compareChunks(x.second, y.second) }
+    }).map { it.first }
+}
+
+private fun orderCompare(pa: Boolean, ia: Int, pb: Boolean, ib: Int): Int {
+    if (pa != pb) return if (pa) -1 else 1
+    val ra = if (ia > 0) ia else Int.MAX_VALUE
+    val rb = if (ib > 0) ib else Int.MAX_VALUE
+    return ra.compareTo(rb)
 }
 
 private fun compareChunks(a: List<String>, b: List<String>): Int {
@@ -76,7 +100,7 @@ class PickTree : ActivityResultContracts.OpenDocumentTree() {
         )
 }
 
-enum class PdfMenuAction { Rename, Move, Remove, Delete }
+enum class PdfMenuAction { Pin, Rename, Move, Remove, Delete }
 
 sealed interface PdfDlg {
     class Rename(val pdf: PdfEntity) : PdfDlg
@@ -180,24 +204,44 @@ fun ReadBar(fraction: Float, modifier: Modifier = Modifier) {
     }
 }
 
+/** Fixed slot sizes, so titles line up whatever the page shape is. */
+val ThumbSlot = DpSize(80.dp, 68.dp)
+val ThumbSlotLarge = DpSize(88.dp, 80.dp)
+
+/**
+ * First-page preview. The slot never changes size; the page is drawn inside it at its real proportions
+ * (tall for books, wide for slides) on a soft mat, so landscape and portrait PDFs both look deliberate, never cropped.
+ */
 @Composable
 fun Thumb(pdf: PdfEntity, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     val pal = LocalPal.current
     val bmp by produceState<Bitmap?>(null, pdf.id, pdf.size) { value = Thumbs.get(ctx, pdf) }
-    val shape = RoundedCornerShape(6.dp)
-    Box(modifier.clip(shape).background(Color.White).border(1.dp, pal.line, shape), contentAlignment = Alignment.Center) {
+    BoxWithConstraints(modifier.clip(RoundedCornerShape(10.dp)).background(pal.chip), contentAlignment = Alignment.Center) {
         val b = bmp
-        if (b != null) Image(b.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop, alignment = Alignment.TopCenter)
-        else Text("PDF", fontSize = 9.sp, color = Color(0xFFB8B2A3), fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+        if (b != null && b.width > 0 && b.height > 0) {
+            val ratio = b.width.toFloat() / b.height
+            val inset = 3.dp
+            val boxW = maxWidth - inset * 2
+            val boxH = maxHeight - inset * 2
+            val w = minOf(boxW, boxH * ratio)
+            val h = w / ratio
+            val page = RoundedCornerShape(3.dp)
+            Image(
+                b.asImageBitmap(), null,
+                Modifier.size(w, h).shadow(1.5.dp, page).clip(page).border(0.5.dp, pal.line, page),
+                contentScale = ContentScale.FillBounds
+            )
+        } else Text("PDF", fontSize = 9.sp, color = pal.soft.copy(alpha = 0.7f), fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
     }
 }
 
 @Composable
 fun PdfRow(
     pdf: PdfEntity, place: String?, selecting: Boolean, selected: Boolean,
-    onClick: () -> Unit, onLong: () -> Unit, onFav: () -> Unit,
-    onMore: ((PdfMenuAction) -> Unit)? = null
+    onClick: () -> Unit, onLong: (() -> Unit)? = null, onFav: () -> Unit,
+    onMore: ((PdfMenuAction) -> Unit)? = null,
+    modifier: Modifier = Modifier
 ) {
     val pal = LocalPal.current
     val started = pdf.pageCount > 0 && pdf.lastPage > 0 && !pdf.missing
@@ -207,16 +251,19 @@ fun PdfRow(
         if (started) "p. ${pdf.lastPage + 1} of ${pdf.pageCount}" else null
     ).joinToString(" · ")
     Row(
-        Modifier.fillMaxWidth()
+        modifier.fillMaxWidth()
             .background(if (selected) pal.accent.copy(alpha = 0.10f) else Color.Transparent)
-            .combinedClickable(onClick = onClick, onLongClick = onLong)
+            .then(if (onLong != null) Modifier.combinedClickable(onClick = onClick, onLongClick = onLong) else Modifier.clickable(onClick = onClick))
             .padding(start = 16.dp, end = 2.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Thumb(pdf, Modifier.size(46.dp, 62.dp))
+        Thumb(pdf, Modifier.size(ThumbSlot))
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Text(pdf.title(), maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, color = if (pdf.missing) pal.soft else pal.ink)
+            Row(verticalAlignment = Alignment.Top) {
+                if (pdf.pinned) Icon(Icons.Rounded.PushPin, "Pinned", tint = pal.accent, modifier = Modifier.padding(top = 3.dp, end = 5.dp).size(14.dp))
+                Text(pdf.title(), maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, color = if (pdf.missing) pal.soft else pal.ink)
+            }
             Spacer(Modifier.height(3.dp))
             Text(meta, fontSize = 12.sp, color = if (pdf.missing) pal.accent else pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (started) { Spacer(Modifier.height(7.dp)); ReadBar((pdf.lastPage + 1f) / pdf.pageCount, Modifier.padding(end = 12.dp)) }
@@ -239,6 +286,7 @@ fun PdfRow(
                 Box {
                     IconButton(onClick = { menu = true }, modifier = Modifier.size(40.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.soft) }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text(if (pdf.pinned) "Unpin" else "Pin to top") }, onClick = { menu = false; onMore(PdfMenuAction.Pin) })
                         DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onMore(PdfMenuAction.Rename) })
                         DropdownMenuItem(text = { Text("Move to…") }, onClick = { menu = false; onMore(PdfMenuAction.Move) })
                         DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { menu = false; onMore(PdfMenuAction.Remove) })
@@ -253,13 +301,14 @@ fun PdfRow(
 @Composable
 fun FolderRow(
     f: FolderEntity, subtitle: String, onClick: () -> Unit,
-    onEdit: () -> Unit, onMove: () -> Unit, onDelete: () -> Unit
+    onEdit: () -> Unit, onMove: () -> Unit, onDelete: () -> Unit,
+    onPin: () -> Unit = {}, modifier: Modifier = Modifier
 ) {
     val pal = LocalPal.current
     val tone = FolderTones[f.color.mod(FolderTones.size)]
     var menu by remember { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+        modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(Modifier.size(46.dp).clip(RoundedCornerShape(14.dp)).background(tone.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
@@ -267,12 +316,16 @@ fun FolderRow(
         }
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Text(f.name, fontFamily = Serif, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = pal.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (f.pinned) Icon(Icons.Rounded.PushPin, "Pinned", tint = pal.accent, modifier = Modifier.padding(end = 5.dp).size(14.dp))
+                Text(f.name, fontFamily = Serif, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = pal.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             Text(subtitle, fontSize = 12.sp, color = pal.soft)
         }
         Box {
             IconButton(onClick = { menu = true }) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.soft) }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(text = { Text(if (f.pinned) "Unpin" else "Pin to top") }, onClick = { menu = false; onPin() })
                 DropdownMenuItem(text = { Text("Rename / colour") }, onClick = { menu = false; onEdit() })
                 DropdownMenuItem(text = { Text("Move to…") }, onClick = { menu = false; onMove() })
                 DropdownMenuItem(text = { Text("Delete folder") }, onClick = { menu = false; onDelete() })

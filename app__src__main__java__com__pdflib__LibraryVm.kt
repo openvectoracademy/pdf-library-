@@ -208,6 +208,41 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     }
     fun updateFolder(id: Long, name: String, color: Int) = viewModelScope.launch { dao.updateFolder(id, name, color) }
     fun moveFolder(id: Long, target: Long?) = viewModelScope.launch { dao.moveFolder(id, target) }
+    // ---------- pin + manual order ----------
+    /** Pinned PDFs sit above the rest of their folder. Newly pinned ones join the end of the pinned block. */
+    fun setPdfPinned(ids: List<Long>, pin: Boolean) {
+        if (ids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val all = allPdfs.value
+            db.withTransaction {
+                if (pin) {
+                    all.filter { it.id in ids && !it.pinned }.groupBy { it.folderId }.forEach { (fid, list) ->
+                        var next = (all.filter { it.folderId == fid && it.pinned }.maxOfOrNull { it.sortIndex } ?: 0) + 1
+                        list.forEach { dao.setPdfPin(it.id, true, next++) }
+                    }
+                } else ids.forEach { dao.setPdfPin(it, false, 0) }
+            }
+        }
+    }
+
+    fun setFolderPinned(f: FolderEntity, pin: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (pin) {
+                val next = (folders.value.filter { it.parentId == f.parentId && it.pinned }.maxOfOrNull { it.sortIndex } ?: 0) + 1
+                dao.setFolderPin(f.id, true, next)
+            } else dao.setFolderPin(f.id, false, 0)
+        }
+    }
+
+    /** [ids] is one whole group (the pinned block or the unpinned block) in its new order. */
+    fun reorderPdfs(ids: List<Long>) {
+        viewModelScope.launch(Dispatchers.IO) { db.withTransaction { ids.forEachIndexed { i, id -> dao.setPdfOrder(id, i + 1) } } }
+    }
+
+    fun reorderFolders(ids: List<Long>) {
+        viewModelScope.launch(Dispatchers.IO) { db.withTransaction { ids.forEachIndexed { i, id -> dao.setFolderOrder(id, i + 1) } } }
+    }
+
     fun deleteFolder(f: FolderEntity) {
         stack.remove(f.id)
         viewModelScope.launch {
@@ -225,6 +260,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     /** Opens the right dialog (or acts straight away) for the ⋮ menu on a PDF row. */
     fun rowAction(p: PdfEntity, a: PdfMenuAction) {
         when (a) {
+            PdfMenuAction.Pin -> setPdfPinned(listOf(p.id), !p.pinned)
             PdfMenuAction.Rename -> pdfDialog = PdfDlg.Rename(p)
             PdfMenuAction.Move -> pdfDialog = PdfDlg.Move(listOf(p.id))
             PdfMenuAction.Remove -> removeFromShelf(listOf(p.id))
@@ -312,14 +348,15 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
             val uriOf = p.associate { it.id to it.uri }
             val root = JSONObject().put("app", "shelf").put("version", 1)
             root.put("folders", JSONArray().also { a ->
-                f.forEach { a.put(JSONObject().put("id", it.id).put("name", it.name).put("parentId", it.parentId ?: JSONObject.NULL).put("color", it.color)) }
+                f.forEach { a.put(JSONObject().put("id", it.id).put("name", it.name).put("parentId", it.parentId ?: JSONObject.NULL).put("color", it.color).put("pinned", it.pinned).put("sortIndex", it.sortIndex)) }
             })
             root.put("pdfs", JSONArray().also { a ->
-                p.filter { it.folderId != null || it.favorite || it.lastPage > 0 || it.label != null || it.hidden }.forEach {
+                p.filter { it.folderId != null || it.favorite || it.lastPage > 0 || it.label != null || it.hidden || it.pinned || it.sortIndex > 0 }.forEach {
                     a.put(JSONObject().put("uri", it.uri).put("name", it.name).put("size", it.size)
                         .put("folderId", it.folderId ?: JSONObject.NULL).put("favorite", it.favorite)
                         .put("lastPage", it.lastPage).put("pageCount", it.pageCount)
-                        .put("label", it.label ?: JSONObject.NULL).put("hidden", it.hidden))
+                        .put("label", it.label ?: JSONObject.NULL).put("hidden", it.hidden)
+                        .put("pinned", it.pinned).put("sortIndex", it.sortIndex))
                 }
             })
             root.put("bookmarks", JSONArray().also { a ->
@@ -347,7 +384,8 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                     val o = fa.getJSONObject(i)
                     dao.insertFolder(FolderEntity(
                         id = o.getLong("id"), name = o.getString("name"),
-                        parentId = if (o.isNull("parentId")) null else o.getLong("parentId"), color = o.optInt("color")
+                        parentId = if (o.isNull("parentId")) null else o.getLong("parentId"), color = o.optInt("color"),
+                        pinned = o.optBoolean("pinned", false), sortIndex = o.optInt("sortIndex", 0)
                     ))
                 }
                 val idByUri = HashMap<String, Long>()
@@ -359,7 +397,8 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                     idByUri[u] = m.id
                     dao.restorePdf(
                         m.id, if (o.isNull("folderId")) null else o.getLong("folderId"), o.getBoolean("favorite"), o.getInt("lastPage"), o.getInt("pageCount"),
-                        if (o.isNull("label")) null else o.getString("label"), o.optBoolean("hidden", false)
+                        if (o.isNull("label")) null else o.getString("label"), o.optBoolean("hidden", false),
+                        o.optBoolean("pinned", false), o.optInt("sortIndex", 0)
                     )
                 }
                 for (i in 0 until ba.length()) {

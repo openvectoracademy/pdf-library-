@@ -23,6 +23,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -51,8 +55,47 @@ fun LibraryScreen(vm: LibraryVm) {
     val currentId = vm.stack.lastOrNull()
     val byId = remember(folders) { folders.associateBy { it.id } }
     val current = currentId?.let { byId[it] }
-    val subs = remember(folders, currentId) { folders.filter { it.parentId == currentId } }
-    val docs = remember(pdfs, currentId) { sortNatural(pdfs.filter { it.folderId == currentId }) }
+    val subs = remember(folders, currentId) { arrangeFolders(folders.filter { it.parentId == currentId }) }
+    val docs = remember(pdfs, currentId) { arrangePdfs(pdfs.filter { it.folderId == currentId }) }
+
+    // Hold-and-drag reordering (pinned rows stay on top; rows only move inside their own block).
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val reorder = remember {
+        DragReorder(
+            vm.libState, scope,
+            edgePx = with(density) { 96.dp.toPx() }, maxSpeedPx = with(density) { 560.dp.toPx() }, slopPx = with(density) { 8.dp.toPx() },
+            onPick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress) },
+            onTick = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+        )
+    }
+    reorder.resolve = { key ->
+        if (key is Long) {
+            val i = docs.indexOfFirst { it.id == key }
+            if (i < 0) null else {
+                val pin = docs[i].pinned
+                DragReorder.Group("p", docs.map { it.id }, docs.indexOfFirst { it.pinned == pin }, docs.indexOfLast { it.pinned == pin }) { slice ->
+                    vm.reorderPdfs(slice.map { it as Long })
+                }
+            }
+        } else if (key is String && key.startsWith("f") && key.drop(1).toLongOrNull() != null) {
+            val i = subs.indexOfFirst { "f${it.id}" == key }
+            if (i < 0) null else {
+                val pin = subs[i].pinned
+                DragReorder.Group("f", subs.map { "f${it.id}" }, subs.indexOfFirst { it.pinned == pin }, subs.indexOfLast { it.pinned == pin }) { slice ->
+                    vm.reorderFolders(slice.map { (it as String).drop(1).toLong() })
+                }
+            }
+        } else null
+    }
+    reorder.onLongPress = { k -> if (k is Long) vm.toggleSel(k) }
+    val shownSubs = reorder.arrange("f", subs) { "f${it.id}" }
+    val shownDocs = reorder.arrange("p", docs) { it.id }
+    LaunchedEffect(subs, docs) {
+        reorder.onSource("f", subs.map { "f${it.id}" })
+        reorder.onSource("p", docs.map { it.id })
+    }
     val stats = remember(pdfs, folders) { FolderStats(pdfs, folders) }
     val resume = remember(pdfs) { pdfs.filter { it.lastOpened > 0 && !it.missing }.maxByOrNull { it.lastOpened } }
     val paths = remember(folders) { folderPaths(folders) }
@@ -89,6 +132,10 @@ fun LibraryScreen(vm: LibraryVm) {
                                 val one = pdfs.firstOrNull { it.id == vm.selection.first() }
                                 if (one != null) { vm.selection.clear(); vm.pdfDialog = PdfDlg.Rename(one) }
                             })
+                            val allPinned = vm.selection.all { id -> pdfs.firstOrNull { it.id == id }?.pinned == true }
+                            DropdownMenuItem(text = { Text(if (allPinned) "Unpin" else "Pin to top") }, onClick = {
+                                more = false; vm.setPdfPinned(vm.selection.toList(), !allPinned); vm.selection.clear()
+                            })
                             DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { more = false; vm.removeFromShelf(vm.selection.toList()) })
                             DropdownMenuItem(text = { Text("Delete from phone", color = pal.accent) }, onClick = {
                                 more = false
@@ -104,7 +151,7 @@ fun LibraryScreen(vm: LibraryVm) {
                 AppHeader(if (onboarding) null else openSearch, onRefresh = if (onboarding) null else ({ vm.rescan() }), refreshing = vm.scanning)
             }
 
-            LazyColumn(state = vm.libState, modifier = Modifier.weight(1f), contentPadding = PaddingValues(bottom = 110.dp)) {
+            LazyColumn(state = vm.libState, modifier = Modifier.weight(1f).reorderGestures(reorder, canDrag = !selecting), contentPadding = PaddingValues(bottom = 110.dp)) {
                 // ---- header ----
                 item(key = "head") {
                     Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp)) {
@@ -161,9 +208,11 @@ fun LibraryScreen(vm: LibraryVm) {
                     // ---- folders ----
                     if (subs.isNotEmpty()) {
                         item(key = "fl") { Overline("Folders", Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp)) }
-                        items(subs, key = { "f${it.id}" }) { f ->
+                        items(shownSubs, key = { "f${it.id}" }) { f ->
                             FolderRow(f, stats.subtitle(f.id), onClick = { vm.enter(f.id) },
-                                onEdit = { dlg = Dlg.Edit(f) }, onMove = { dlg = Dlg.MoveFolder(f) }, onDelete = { dlg = Dlg.Delete(f) })
+                                onEdit = { dlg = Dlg.Edit(f) }, onMove = { dlg = Dlg.MoveFolder(f) }, onDelete = { dlg = Dlg.Delete(f) },
+                                onPin = { vm.setFolderPinned(f, !f.pinned) },
+                                modifier = reorderItem(reorder, "f${f.id}", pal.surface))
                         }
                     }
 
@@ -173,12 +222,12 @@ fun LibraryScreen(vm: LibraryVm) {
                             val label = if (current == null && subs.isNotEmpty()) "Unsorted" else "PDFs"
                             Overline("$label · ${docs.size}", Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp))
                         }
-                        items(docs, key = { it.id }) { p ->
+                        items(shownDocs, key = { it.id }) { p ->
                             PdfRow(p, null, selecting, p.id in vm.selection,
                                 onClick = { if (selecting) vm.toggleSel(p.id) else vm.openReader(p.id) },
-                                onLong = { vm.toggleSel(p.id) },
                                 onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
-                                onMore = { a -> vm.rowAction(p, a) })
+                                onMore = { a -> vm.rowAction(p, a) },
+                                modifier = reorderItem(reorder, p.id, pal.surface))
                         }
                     }
 
@@ -251,7 +300,7 @@ private fun ResumeCard(p: PdfEntity, place: String?, onClick: () -> Unit) {
             .background(pal.surface).border(1.dp, pal.line, shape).clickable(onClick = onClick).padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Thumb(p, Modifier.size(64.dp, 88.dp))
+        Thumb(p, Modifier.size(ThumbSlotLarge))
         Spacer(Modifier.width(16.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

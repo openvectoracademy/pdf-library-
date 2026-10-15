@@ -94,6 +94,38 @@ class PdfDoc private constructor(private val pfd: ParcelFileDescriptor, private 
         }
     }
 
+    /**
+     * Renders only a part of a page, at the exact pixel density it will be shown at. This is what keeps text razor sharp
+     * at high zoom without ever allocating a gigantic full-page bitmap. Rectangle is in page fractions (0..1).
+     */
+    suspend fun renderRegion(i: Int, fullWidthPx: Float, l: Float, t: Float, r: Float, b: Float, maxPixels: Int): Bitmap? = mutex.withLock {
+        if (closed) null else withContext(Dispatchers.IO) {
+            try {
+                val page = renderer.openPage(i)
+                try {
+                    var sx = fullWidthPx / page.width
+                    var bw = ((r - l) * page.width * sx)
+                    var bh = ((b - t) * page.height * sx)
+                    if (bw * bh > maxPixels) {
+                        val k = Math.sqrt(maxPixels / (bw * bh).toDouble()).toFloat()
+                        sx *= k; bw *= k; bh *= k
+                    }
+                    val w = Math.ceil(bw.toDouble()).toInt().coerceAtLeast(1)
+                    val h = Math.ceil(bh.toDouble()).toInt().coerceAtLeast(1)
+                    val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                    bmp.eraseColor(Color.WHITE)
+                    val m = android.graphics.Matrix()
+                    m.setScale(sx, sx)
+                    m.postTranslate(-l * page.width * sx, -t * page.height * sx)
+                    page.render(bmp, null, m, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    bmp
+                } finally { page.close() }
+            } catch (e: OutOfMemoryError) {
+                cache.evictAll(); null
+            } catch (e: Exception) { null }
+        }
+    }
+
     fun close() {
         closed = true
         cache.evictAll()
@@ -114,7 +146,7 @@ class PdfDoc private constructor(private val pfd: ParcelFileDescriptor, private 
 
 /** First-page thumbnails: memory LRU + JPEG files in cacheDir. Only requested for rows that are on screen. */
 object Thumbs {
-    private val mem = object : LruCache<Long, Bitmap>(16 * 1024 * 1024) {
+    private val mem = object : LruCache<Long, Bitmap>(24 * 1024 * 1024) {
         override fun sizeOf(key: Long, value: Bitmap) = value.byteCount
     }
     private val failed = HashSet<Long>()
@@ -129,7 +161,7 @@ object Thumbs {
     private fun load(ctx: Context, p: PdfEntity): Bitmap? {
         try {
             val dir = File(ctx.cacheDir, "thumbs").apply { mkdirs() }
-            val file = File(dir, "${p.id}_${p.size}.jpg")
+            val file = File(dir, "${p.id}_${p.size}_v2.jpg")
             if (file.exists()) {
                 val b = BitmapFactory.decodeFile(file.path)
                 if (b != null) { mem.put(p.id, b); return b }
@@ -141,8 +173,10 @@ object Thumbs {
                 if (r.pageCount == 0) return null
                 val page = r.openPage(0)
                 try {
-                    val w = 220
-                    val h = (w * page.height.toFloat() / page.width).toInt().coerceIn(1, 600)
+                    // The long side is 420 px whatever the page shape, so wide slides and tall books are both crisp.
+                    val k = 420f / maxOf(page.width, page.height).coerceAtLeast(1)
+                    val w = (page.width * k).toInt().coerceAtLeast(1)
+                    val h = (page.height * k).toInt().coerceAtLeast(1)
                     val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                     bmp.eraseColor(Color.WHITE)
                     page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
