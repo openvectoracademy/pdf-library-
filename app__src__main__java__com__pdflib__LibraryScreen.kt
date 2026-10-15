@@ -1,5 +1,7 @@
 package com.pdflib
 
+import android.content.Context
+import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,6 +26,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/** Multi-select PDF picker whose grants survive a restart. */
+private class PickPdfs : ActivityResultContracts.OpenMultipleDocuments() {
+    override fun createIntent(context: Context, input: Array<String>): Intent =
+        super.createIntent(context, input).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+}
+
 private sealed interface Dlg {
     object New : Dlg
     class Edit(val f: FolderEntity) : Dlg
@@ -47,6 +55,7 @@ fun LibraryScreen(vm: LibraryVm) {
     val selecting = vm.selection.isNotEmpty()
     var dlg by remember { mutableStateOf<Dlg?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { u -> if (u != null) vm.addSource(u) }
+    val pickFiles = rememberLauncherForActivityResult(PickPdfs()) { l -> if (l.isNotEmpty()) vm.addFiles(l, currentId) }
     val onboarding = vm.loaded && vm.sources.isEmpty() && pdfs.isEmpty() && currentId == null
 
     BackHandler(enabled = selecting || vm.stack.isNotEmpty()) { if (selecting) vm.selection.clear() else vm.up() }
@@ -174,17 +183,22 @@ fun LibraryScreen(vm: LibraryVm) {
                     }
 
                     if (current != null && subs.isEmpty() && docs.isEmpty()) item(key = "empty") {
-                        Hint("Nothing in here yet", "Create a subfolder with the + button, or go to Unsorted, long-press some PDFs and tap Move.")
+                        Hint("Nothing in here yet", "Use the buttons at the bottom right to add PDFs from storage here, or create a subfolder.")
                     }
                 }
             }
         }
 
         if (!selecting && !onboarding) {
-            FloatingActionButton(
-                onClick = { dlg = Dlg.New }, containerColor = pal.accent, contentColor = Color.White,
-                shape = RoundedCornerShape(18.dp), modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)
-            ) { Icon(Icons.Rounded.CreateNewFolder, "New folder") }
+            Column(Modifier.align(Alignment.BottomEnd).padding(16.dp), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SmallFloatingActionButton(
+                    onClick = { pickFiles.launch(arrayOf("application/pdf")) }, containerColor = pal.surface, contentColor = pal.accent,
+                    shape = RoundedCornerShape(14.dp), modifier = Modifier.border(1.dp, pal.line, RoundedCornerShape(14.dp))
+                ) { Icon(Icons.Rounded.NoteAdd, "Add PDFs from storage") }
+                FloatingActionButton(
+                    onClick = { dlg = Dlg.New }, containerColor = pal.accent, contentColor = Color.White, shape = RoundedCornerShape(18.dp)
+                ) { Icon(Icons.Rounded.CreateNewFolder, "New folder") }
+            }
         }
     }
 

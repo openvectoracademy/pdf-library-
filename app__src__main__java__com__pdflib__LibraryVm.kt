@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.*
@@ -122,6 +123,28 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
             }
             withContext(Dispatchers.Main) { scanning = false }
         }
+    }
+
+    /** Single PDFs picked from storage; they land in the folder you are currently viewing. */
+    fun addFiles(uris: List<Uri>, folderId: Long?) = viewModelScope.launch(Dispatchers.IO) {
+        val known = dao.pdfsOnce().associateBy { it.uri }
+        val fresh = ArrayList<PdfEntity>()
+        val existing = ArrayList<Long>()
+        for (u in uris) {
+            try { ctx.contentResolver.takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (e: Exception) { }
+            val have = known[u.toString()]
+            if (have != null) { existing.add(have.id); continue }
+            var name = "document.pdf"; var size = 0L
+            try {
+                ctx.contentResolver.query(u, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) { c.getString(0)?.let { name = it }; size = c.getLong(1) }
+                }
+            } catch (e: Exception) { }
+            fresh.add(PdfEntity(uri = u.toString(), name = name, size = size, modified = System.currentTimeMillis(), folderId = folderId))
+        }
+        fresh.chunked(200).forEach { dao.insertPdfs(it) }
+        existing.chunked(500).forEach { dao.movePdfs(it, folderId) }
+        withContext(Dispatchers.Main) { toast("${uris.size} PDF" + (if (uris.size == 1) "" else "s") + " added") }
     }
 
     // ---------- folders ----------

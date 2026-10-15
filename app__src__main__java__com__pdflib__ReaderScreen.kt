@@ -9,6 +9,9 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.*
@@ -26,7 +29,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -130,17 +135,49 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
     val bms = remember(allBm, pdfId) { allBm.filter { it.pdfId == pdfId } }
     val here = bms.firstOrNull { it.page == current }
 
+    val hScroll = rememberScrollState()
+    var pinch by remember { mutableFloatStateOf(1f) }
+    val maxZoom = 3.5f
+
     BoxWithConstraints(
-        Modifier.fillMaxSize().pointerInput(Unit) {
-            detectTapGestures(
-                onTap = { chrome = !chrome },
-                onDoubleTap = { zoom = if (zoom < 1.2f) 1.7f else if (zoom < 1.9f) 2.2f else 1f }
-            )
-        }
+        Modifier.fillMaxSize()
+            // Two-finger pinch: scales the view live (cheap), re-renders the pages sharply once you let go.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        if (event.changes.size >= 2) {
+                            val z = event.calculateZoom()
+                            if (z != 1f) pinch = (pinch * z).coerceIn(1f / zoom, maxZoom / zoom)
+                            event.changes.forEach { it.consume() }
+                        }
+                    } while (event.changes.any { it.pressed })
+                    if (pinch != 1f) {
+                        val old = zoom
+                        val newZ = (zoom * pinch).coerceIn(1f, maxZoom)
+                        val viewW = size.width
+                        val frac = (hScroll.value + viewW / 2f) / (viewW * old)
+                        zoom = newZ
+                        pinch = 1f
+                        scope.launch {
+                            withFrameNanos { }
+                            withFrameNanos { }
+                            hScroll.scrollTo((frac * viewW * newZ - viewW / 2f).toInt().coerceAtLeast(0))
+                        }
+                    }
+                }
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { chrome = !chrome },
+                    onDoubleTap = { zoom = if (zoom < 1.3f) 2f else if (zoom < 2.6f) 3.2f else 1f }
+                )
+            }
     ) {
-        val pageW = (constraints.maxWidth * zoom).toInt()
+        val pageW = (constraints.maxWidth * zoom).toInt().coerceAtMost(2800)
         val listWidth = this.maxWidth * zoom
-        Box(Modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
+        Box(Modifier.fillMaxSize().graphicsLayer { scaleX = pinch; scaleY = pinch }.horizontalScroll(hScroll)) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.width(listWidth).fillMaxHeight(),

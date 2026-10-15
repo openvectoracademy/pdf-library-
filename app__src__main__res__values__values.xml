@@ -2,7 +2,7 @@
 <resources>
     <string name="app_name">Shelf</string>
     <color name="paper">#F6F3EC</color>
-    <color name="ic_bg">#1B1A17</color>
+    <color name="ic_bg">#F6F1E5</color>
     <style name="Theme.PdfLib" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/paper</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
