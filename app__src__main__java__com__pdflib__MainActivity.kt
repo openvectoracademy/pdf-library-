@@ -1,0 +1,80 @@
+package com.pdflib
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.*
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        setContent { PdfLibTheme { Root() } }
+    }
+}
+
+@Composable
+private fun Root(vm: LibraryVm = viewModel()) {
+    val pal = LocalPal.current
+    val pdfs by vm.pdfs.collectAsState()
+    val recent = remember(pdfs) { pdfs.filter { it.lastOpened > 0 }.sortedByDescending { it.lastOpened }.take(100) }
+    val saved = remember(pdfs) { pdfs.filter { it.favorite } }
+
+    Box(Modifier.fillMaxSize().background(pal.bg)) {
+        Column(Modifier.fillMaxSize()) {
+            Box(Modifier.weight(1f)) {
+                when (vm.tab) {
+                    0 -> LibraryScreen(vm)
+                    1 -> PdfListScreen(vm, "Recent", recent, "Nothing opened yet", "PDFs you read will show up here, ready to pick up where you left off.")
+                    2 -> PdfListScreen(vm, "Saved", saved, "No favourites yet", "Tap the star on any PDF to keep it close for exam week.")
+                    else -> SettingsScreen(vm)
+                }
+            }
+            BottomBar(vm.tab) { vm.tab = it }
+        }
+        if (vm.searching) SearchScreen(vm)
+        vm.readerId?.let { ReaderScreen(vm, it) }
+    }
+}
+
+@Composable
+private fun BottomBar(selected: Int, onSelect: (Int) -> Unit) {
+    val pal = LocalPal.current
+    val items = listOf<Pair<String, ImageVector>>(
+        "Library" to Icons.Rounded.Book, "Recent" to Icons.Rounded.History,
+        "Saved" to Icons.Rounded.Star, "Settings" to Icons.Rounded.Settings
+    )
+    Column(Modifier.background(pal.surface)) {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(pal.line))
+        Row(Modifier.fillMaxWidth().navigationBarsPadding().height(60.dp)) {
+            items.forEachIndexed { i, (label, icon) ->
+                val on = i == selected
+                Column(
+                    Modifier.weight(1f).fillMaxHeight().clickable { onSelect(i) },
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(icon, label, tint = if (on) pal.accent else pal.soft, modifier = Modifier.size(24.dp))
+                    Spacer(Modifier.height(3.dp))
+                    Text(label, fontSize = 11.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) pal.ink else pal.soft)
+                }
+            }
+        }
+    }
+}
