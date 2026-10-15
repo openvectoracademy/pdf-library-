@@ -1,6 +1,10 @@
 package com.pdflib
 
 import android.content.Context
+import androidx.compose.foundation.shape.CircleShape
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -50,7 +54,8 @@ fun LibraryScreen(vm: LibraryVm) {
     val subs = remember(folders, currentId) { folders.filter { it.parentId == currentId } }
     val docs = remember(pdfs, currentId) { sortNatural(pdfs.filter { it.folderId == currentId }) }
     val stats = remember(pdfs, folders) { FolderStats(pdfs, folders) }
-    val resume = remember(pdfs) { pdfs.filter { it.lastOpened > 0 }.maxByOrNull { it.lastOpened } }
+    val resume = remember(pdfs) { pdfs.filter { it.lastOpened > 0 && !it.missing }.maxByOrNull { it.lastOpened } }
+    val paths = remember(folders) { folderPaths(folders) }
     val selecting = vm.selection.isNotEmpty()
     var dlg by remember { mutableStateOf<Dlg?>(null) }
     val picker = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) vm.addSource(u) }
@@ -94,9 +99,9 @@ fun LibraryScreen(vm: LibraryVm) {
                     }
                 }
             } else if (current != null) {
-                AppHeader(onSearch = openSearch, onBack = { vm.up() })
+                AppHeader(onSearch = openSearch, onBack = { vm.up() }, onRefresh = { vm.rescan() }, refreshing = vm.scanning)
             } else {
-                AppHeader(if (onboarding) null else openSearch)
+                AppHeader(if (onboarding) null else openSearch, onRefresh = if (onboarding) null else ({ vm.rescan() }), refreshing = vm.scanning)
             }
 
             LazyColumn(state = vm.libState, modifier = Modifier.weight(1f), contentPadding = PaddingValues(bottom = 110.dp)) {
@@ -150,26 +155,7 @@ fun LibraryScreen(vm: LibraryVm) {
                 } else {
                     // ---- continue reading ----
                     if (current == null && !selecting && resume != null) item(key = "resume") {
-                        Row(
-                            Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth().clip(RoundedCornerShape(20.dp))
-                                .background(pal.surface).border(1.dp, pal.line, RoundedCornerShape(20.dp))
-                                .clickable { vm.openReader(resume.id) }.padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Thumb(resume, Modifier.size(54.dp, 74.dp))
-                            Spacer(Modifier.width(14.dp))
-                            Column(Modifier.weight(1f)) {
-                                Overline("Continue reading", color = pal.accent)
-                                Spacer(Modifier.height(4.dp))
-                                Text(resume.title(), fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, lineHeight = 22.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, color = pal.ink)
-                                Spacer(Modifier.height(6.dp))
-                                if (resume.pageCount > 0) {
-                                    Text("Page ${resume.lastPage + 1} of ${resume.pageCount}", fontSize = 12.sp, color = pal.soft)
-                                    Spacer(Modifier.height(6.dp))
-                                    ReadBar((resume.lastPage + 1f) / resume.pageCount)
-                                }
-                            }
-                        }
+                        ResumeCard(resume, resume.folderId?.let { paths[it] }) { vm.openReader(resume.id) }
                     }
 
                     // ---- folders ----
@@ -235,5 +221,62 @@ fun LibraryScreen(vm: LibraryVm) {
         )
         is Dlg.MoveFolder -> FolderPicker(folders, descendants(d.f.id, folders), "Move “${d.f.name}” to", { vm.moveFolder(d.f.id, it); dlg = null }, { dlg = null })
         null -> {}
+    }
+}
+
+private fun timeAgo(t: Long): String {
+    val m = (System.currentTimeMillis() - t) / 60000
+    return when {
+        m < 1 -> "Just now"
+        m < 60 -> "$m min ago"
+        m < 24 * 60 -> "${m / 60} h ago"
+        m < 48 * 60 -> "Yesterday"
+        m < 30 * 24 * 60 -> "${m / (24 * 60)} days ago"
+        else -> SimpleDateFormat("d MMM", Locale.getDefault()).format(Date(t))
+    }
+}
+
+/** The one thing you most likely want when you open Shelf: pick up exactly where you stopped. */
+@Composable
+private fun ResumeCard(p: PdfEntity, place: String?, onClick: () -> Unit) {
+    val pal = LocalPal.current
+    val shape = RoundedCornerShape(22.dp)
+    val total = p.pageCount
+    val page = (p.lastPage + 1).coerceAtLeast(1)
+    val started = total > 0 && p.lastPage > 0
+    val done = total > 0 && page >= total
+    val frac = if (total > 0) (page.toFloat() / total).coerceIn(0f, 1f) else 0f
+    Row(
+        Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth().clip(shape)
+            .background(pal.surface).border(1.dp, pal.line, shape).clickable(onClick = onClick).padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Thumb(p, Modifier.size(64.dp, 88.dp))
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Overline(if (done) "Last read" else "Continue reading", color = pal.accent)
+                Spacer(Modifier.weight(1f))
+                Text(timeAgo(p.lastOpened), fontSize = 11.sp, color = pal.soft)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(p.title(), fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, lineHeight = 23.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, color = pal.ink)
+            if (place != null) Text(place, fontSize = 12.sp, color = pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+            Spacer(Modifier.height(12.dp))
+            if (started) {
+                ReadBar(frac)
+                Spacer(Modifier.height(6.dp))
+                Row {
+                    Text("${(frac * 100).toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = pal.ink)
+                    Spacer(Modifier.weight(1f))
+                    val left = total - page
+                    Text(if (done) "Finished" else if (left == 1) "1 page left" else "$left pages left", fontSize = 12.sp, color = pal.soft)
+                }
+            } else Text("Just opened", fontSize = 12.sp, color = pal.soft)
+        }
+        Spacer(Modifier.width(14.dp))
+        Box(Modifier.size(44.dp).clip(CircleShape).background(pal.accent), contentAlignment = Alignment.Center) {
+            Icon(Icons.Rounded.PlayArrow, "Resume", tint = Color.White)
+        }
     }
 }

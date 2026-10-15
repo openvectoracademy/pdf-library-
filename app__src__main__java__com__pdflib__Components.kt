@@ -134,15 +134,41 @@ fun LogoMark(size: androidx.compose.ui.unit.Dp = 36.dp) {
     )
 }
 
-/** A quiet brand bar: just the logo mark, so the page title below stays the hero. [onSearch] null = no search icon; [onBack] adds a back arrow (inside folders). */
+/** A quiet brand bar: just the logo mark, so the page title below stays the hero. [onSearch] null = no search icon; [onBack] adds a back arrow (inside folders); [onRefresh] adds a rescan button that spins while [refreshing]. */
 @Composable
-fun AppHeader(onSearch: (() -> Unit)?, onBack: (() -> Unit)? = null) {
+fun AppHeader(onSearch: (() -> Unit)?, onBack: (() -> Unit)? = null, onRefresh: (() -> Unit)? = null, refreshing: Boolean = false) {
     val pal = LocalPal.current
     Row(Modifier.fillMaxWidth().height(56.dp).padding(start = if (onBack != null) 4.dp else 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         if (onBack != null) IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back", tint = pal.ink) }
         LogoMark(30.dp)
         Spacer(Modifier.weight(1f))
+        if (onRefresh != null) RefreshButton(refreshing, onRefresh)
         if (onSearch != null) IconButton(onClick = onSearch) { Icon(Icons.Rounded.Search, "Search", tint = pal.ink) }
+    }
+}
+
+/** Spins while a scan runs, and for at least a moment after a tap so a very fast scan still feels acknowledged. */
+@Composable
+private fun RefreshButton(refreshing: Boolean, onClick: () -> Unit) {
+    val pal = LocalPal.current
+    val rot = remember { androidx.compose.animation.core.Animatable(0f) }
+    var kick by remember { mutableStateOf(false) }
+    LaunchedEffect(kick) { if (kick) { kotlinx.coroutines.delay(800); kick = false } }
+    val spinning = refreshing || kick
+    LaunchedEffect(spinning) {
+        if (spinning) {
+            while (true) rot.animateTo(rot.value + 360f, androidx.compose.animation.core.tween(800, easing = androidx.compose.animation.core.LinearEasing))
+        } else {
+            val rest = kotlin.math.ceil(rot.value / 360f) * 360f
+            rot.animateTo(rest, androidx.compose.animation.core.tween(250))
+            rot.snapTo(0f)
+        }
+    }
+    IconButton(onClick = { kick = true; onClick() }) {
+        Icon(
+            Icons.Rounded.Refresh, "Refresh library", tint = if (spinning) pal.accent else pal.ink,
+            modifier = Modifier.graphicsLayer { rotationZ = rot.value }
+        )
     }
 }
 
