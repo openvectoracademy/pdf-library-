@@ -139,10 +139,11 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
         }
     ) {
         val pageW = (constraints.maxWidth * zoom).toInt()
+        val listWidth = this.maxWidth * zoom
         Box(Modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.width(maxWidth * zoom).fillMaxHeight(),
+                modifier = Modifier.width(listWidth).fillMaxHeight(),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
                 contentPadding = WindowInsets.systemBars.asPaddingValues()
             ) {
