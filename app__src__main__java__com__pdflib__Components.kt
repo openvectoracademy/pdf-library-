@@ -41,6 +41,19 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.Locale
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import kotlinx.coroutines.launch
 
 val Serif = FontFamily.Serif
 
@@ -375,47 +388,205 @@ fun FolderDialog(title: String, initialName: String, initialColor: Int, confirm:
     )
 }
 
+/**
+ * The "Move to" sheet. Browse like a file manager: tap a folder to open it, the breadcrumb shows where you are,
+ * search jumps straight to any folder, and one big button moves everything into the folder you are looking at.
+ * [current] marks where the items live now, so "Already in this folder" is never a surprise.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FolderPicker(folders: List<FolderEntity>, exclude: Set<Long>, title: String, onPick: (Long?) -> Unit, onDismiss: () -> Unit) {
+fun FolderPicker(
+    folders: List<FolderEntity>, exclude: Set<Long>, title: String, onPick: (Long?) -> Unit, onDismiss: () -> Unit,
+    subtitle: String? = null, current: Set<Long?> = emptySet(), stats: FolderStats? = null,
+    onNewFolder: ((String, Int, Long?) -> Unit)? = null
+) {
     val pal = LocalPal.current
-    val flat = remember(folders, exclude) {
-        val kids = folders.groupBy { it.parentId }
-        val out = ArrayList<Pair<FolderEntity, Int>>()
-        fun walk(parent: Long?, depth: Int) {
-            kids[parent]?.sortedBy { it.name.lowercase() }?.forEach {
-                if (it.id !in exclude) { out.add(it to depth); walk(it.id, depth + 1) }
-            }
-        }
-        walk(null, 0)
+    val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    var at by rememberSaveable { mutableStateOf<Long?>(null) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var forward by remember { mutableStateOf(true) }
+    var creating by remember { mutableStateOf(false) }
+
+    val byId = remember(folders) { folders.associateBy { it.id } }
+    val paths = remember(folders) { folderPaths(folders) }
+    val here = at?.takeIf { it in byId && it !in exclude }
+    val trail = remember(here, byId) {
+        val out = ArrayList<FolderEntity>()
+        var x = here?.let { byId[it] }
+        while (x != null && out.size < 50) { out.add(0, x); x = x.parentId?.let { byId[it] } }
         out
     }
-    AlertDialog(
-        onDismissRequest = onDismiss, containerColor = pal.surface,
-        title = { Text(title, fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
-        text = {
-            LazyColumn(Modifier.heightIn(max = 380.dp)) {
-                item { PickRow("Library (top level)", 0, pal.ink) { onPick(null) } }
-                items(flat, key = { it.first.id }) { (f, d) ->
-                    PickRow(f.name, d, FolderTones[f.color.mod(FolderTones.size)]) { onPick(f.id) }
+    val tokens = remember(query) { query.lowercase().split(' ').filter { it.isNotBlank() } }
+    val searching = tokens.isNotEmpty()
+    val hereName = trail.lastOrNull()?.name ?: "Library"
+    val same = current.isNotEmpty() && current.all { it == here }
+
+    fun depth(id: Long?): Int {
+        var d = 0
+        var x = id?.let { byId[it] }
+        while (x != null && d < 50) { d++; x = x.parentId?.let { byId[it] } }
+        return d
+    }
+    fun go(id: Long?) { forward = depth(id) >= depth(here); at = id; query = "" }
+    fun finish(after: () -> Unit) { scope.launch { sheet.hide() }.invokeOnCompletion { after() } }
+
+    BackHandler(enabled = searching || here != null) {
+        if (searching) query = "" else go(trail.lastOrNull()?.parentId)
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheet, containerColor = pal.surface) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight(0.92f).navigationBarsPadding().imePadding()) {
+            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 22.sp, color = pal.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (subtitle != null) Text(subtitle, fontSize = 13.sp, color = pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (onNewFolder != null) {
+                    IconButton(onClick = { creating = true }) { Icon(Icons.Rounded.CreateNewFolder, "New folder", tint = pal.accent) }
                 }
             }
-        },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
+            Spacer(Modifier.height(12.dp))
+            Row(
+                Modifier.padding(horizontal = 16.dp).fillMaxWidth().height(44.dp).clip(RoundedCornerShape(22.dp)).background(pal.chip).padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Rounded.Search, null, tint = pal.soft, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
+                Box(Modifier.weight(1f)) {
+                    BasicTextField(
+                        query, { query = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        textStyle = TextStyle(color = pal.ink, fontSize = 15.sp), cursorBrush = SolidColor(pal.accent),
+                        decorationBox = { inner -> Box { if (query.isEmpty()) Text("Search folders", color = pal.soft, fontSize = 15.sp); inner() } }
+                    )
+                }
+                if (query.isNotEmpty()) {
+                    Icon(Icons.Rounded.Close, "Clear", tint = pal.soft, modifier = Modifier.size(20.dp).clip(CircleShape).clickable { query = "" })
+                }
+            }
+            if (searching) {
+                Spacer(Modifier.height(14.dp))
+            } else {
+                val scroll = rememberScrollState()
+                LaunchedEffect(trail.size) { scroll.animateScrollTo(scroll.maxValue) }
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(scroll).padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Crumb("Library", trail.isEmpty(), home = true) { go(null) }
+                    trail.forEachIndexed { i, f ->
+                        Icon(Icons.Rounded.ChevronRight, null, tint = pal.soft, modifier = Modifier.size(18.dp))
+                        Crumb(f.name, i == trail.lastIndex) { go(f.id) }
+                    }
+                }
+            }
+
+            Box(Modifier.weight(1f)) {
+                AnimatedContent(
+                    targetState = if (searching) -1L else (here ?: 0L),
+                    modifier = Modifier.fillMaxSize(),
+                    transitionSpec = {
+                        val dir = if (forward) 1 else -1
+                        (fadeIn(tween(180)) + slideInHorizontally(tween(220)) { dir * it / 5 }) togetherWith
+                            (fadeOut(tween(120)) + slideOutHorizontally(tween(220)) { -dir * it / 5 })
+                    },
+                    label = "pickerLevel"
+                ) { lv ->
+                    if (lv == -1L) {
+                        val results = folders.filter { f -> f.id !in exclude && tokens.all { it in f.name.lowercase() } }
+                            .sortedBy { (paths[it.id] ?: it.name).lowercase() }.take(60)
+                        if (results.isEmpty()) {
+                            Hint("No folders match", "Try fewer or shorter words.")
+                        } else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 8.dp)) {
+                            items(results, key = { it.id }) { f ->
+                                PickFolderRow(f, paths[f.id], f.id in current) { go(f.id) }
+                            }
+                        }
+                    } else {
+                        val parent: Long? = if (lv == 0L) null else lv
+                        val kids = folders.filter { it.parentId == parent && it.id !in exclude }.sortedBy { it.name.lowercase() }
+                        if (kids.isEmpty()) {
+                            Hint(
+                                "No subfolders here",
+                                if (onNewFolder != null) "Move into this folder, or create a new one with the folder button above."
+                                else "You can move into this folder."
+                            )
+                        } else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 8.dp)) {
+                            items(kids, key = { it.id }) { f ->
+                                PickFolderRow(f, stats?.subtitle(f.id), f.id in current) { go(f.id) }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Box(Modifier.fillMaxWidth().height(1.dp).background(pal.line))
+            Button(
+                onClick = { finish { onPick(here) } }, enabled = !same,
+                modifier = Modifier.padding(16.dp).fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = pal.accent, contentColor = Color.White,
+                    disabledContainerColor = pal.chip, disabledContentColor = pal.soft
+                )
+            ) {
+                Icon(Icons.Rounded.FolderOpen, null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (same) "Already in “$hereName”" else "Move to “$hereName”",
+                    fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+
+    if (creating && onNewFolder != null) {
+        FolderDialog("New folder", "", folders.count { it.parentId == here } % FolderTones.size, "Create", { creating = false }) { n, c ->
+            onNewFolder(n, c, here); creating = false
+        }
+    }
 }
 
 @Composable
-private fun PickRow(label: String, depth: Int, tone: Color, onClick: () -> Unit) {
+private fun Crumb(text: String, last: Boolean, home: Boolean = false, onClick: () -> Unit) {
     val pal = LocalPal.current
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(onClick = onClick)
-            .padding(start = (8 + depth * 18).dp, top = 11.dp, bottom = 11.dp, end = 8.dp),
+        Modifier.clip(RoundedCornerShape(50)).background(if (last) pal.accent.copy(alpha = 0.14f) else Color.Transparent)
+            .clickable(enabled = !last, onClick = onClick).padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(Icons.Rounded.Folder, null, tint = tone, modifier = Modifier.size(20.dp))
-        Spacer(Modifier.width(10.dp))
-        Text(label, color = pal.ink, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (home) {
+            Icon(Icons.Rounded.Home, null, tint = if (last) pal.accent else pal.soft, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(4.dp))
+        }
+        Text(text, fontSize = 13.sp, fontWeight = if (last) FontWeight.SemiBold else FontWeight.Medium, color = if (last) pal.accent else pal.ink, maxLines = 1)
+    }
+}
+
+@Composable
+private fun PickFolderRow(f: FolderEntity, sub: String?, isCurrent: Boolean, onClick: () -> Unit) {
+    val pal = LocalPal.current
+    val tone = FolderTones[f.color.mod(FolderTones.size)]
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(44.dp).clip(RoundedCornerShape(13.dp)).background(tone.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
+            Icon(Icons.Rounded.Folder, null, tint = tone, modifier = Modifier.size(24.dp))
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(f.name, fontFamily = Serif, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = pal.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (sub != null) Text(sub, fontSize = 12.sp, color = pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (isCurrent) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "Current", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = pal.accent,
+                modifier = Modifier.clip(RoundedCornerShape(50)).background(pal.accent.copy(alpha = 0.14f)).padding(horizontal = 8.dp, vertical = 3.dp)
+            )
+        }
+        Spacer(Modifier.width(4.dp))
+        Icon(Icons.Rounded.ChevronRight, null, tint = pal.soft)
     }
 }
 
@@ -439,12 +610,19 @@ fun RenameDialog(initial: String, onDismiss: () -> Unit, onOk: (String) -> Unit)
 fun PdfDialogHost(vm: LibraryVm) {
     val pal = LocalPal.current
     val folders by vm.folders.collectAsState()
+    val allPdfs by vm.pdfs.collectAsState()
     when (val d = vm.pdfDialog) {
         is PdfDlg.Rename -> RenameDialog(d.pdf.title(), { vm.pdfDialog = null }) { n -> vm.renamePdf(d.pdf, n); vm.pdfDialog = null }
-        is PdfDlg.Move -> FolderPicker(
-            folders, emptySet(), if (d.ids.size == 1) "Move to" else "Move ${d.ids.size} PDFs to",
-            { vm.movePdfs(d.ids, it); vm.selection.clear(); vm.pdfDialog = null }, { vm.pdfDialog = null }
-        )
+        is PdfDlg.Move -> {
+            val stats = remember(allPdfs, folders) { FolderStats(allPdfs, folders) }
+            val cur = remember(d.ids, allPdfs) { val ids = d.ids.toHashSet(); allPdfs.filter { it.id in ids }.map { it.folderId }.toSet() }
+            val one = if (d.ids.size == 1) allPdfs.firstOrNull { it.id == d.ids[0] }?.title() else null
+            FolderPicker(
+                folders, emptySet(), if (d.ids.size == 1) "Move to" else "Move ${d.ids.size} PDFs to",
+                { vm.movePdfs(d.ids, it); vm.selection.clear(); vm.pdfDialog = null }, { vm.pdfDialog = null },
+                subtitle = one, current = cur, stats = stats, onNewFolder = { n, c, par -> vm.createFolder(n, c, par) }
+            )
+        }
         is PdfDlg.Delete -> AlertDialog(
             onDismissRequest = { vm.pdfDialog = null }, containerColor = pal.surface,
             title = {

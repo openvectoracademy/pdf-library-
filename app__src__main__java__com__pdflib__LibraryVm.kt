@@ -210,7 +210,13 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         dao.insertFolder(FolderEntity(name = name, parentId = parent, color = color))
     }
     fun updateFolder(id: Long, name: String, color: Int) = viewModelScope.launch { dao.updateFolder(id, name, color) }
-    fun moveFolder(id: Long, target: Long?) = viewModelScope.launch { dao.moveFolder(id, target) }
+    private fun folderName(id: Long?): String = id?.let { t -> folders.value.firstOrNull { it.id == t }?.name } ?: "Library"
+    fun moveFolder(id: Long, target: Long?) {
+        val f = folders.value.firstOrNull { it.id == id } ?: return
+        val old = f.parentId
+        viewModelScope.launch { dao.moveFolder(id, target) }
+        if (old != target) undo = UndoNote("Moved “${f.name}” to ${folderName(target)}") { viewModelScope.launch { dao.moveFolder(id, old) } }
+    }
     // ---------- pin + manual order ----------
     /** Pinned PDFs sit above the rest of their folder. Newly pinned ones join the end of the pinned block. */
     fun setPdfPinned(ids: List<Long>, pin: Boolean) {
@@ -258,7 +264,16 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- pdfs ----------
-    fun movePdfs(ids: List<Long>, target: Long?) = viewModelScope.launch { ids.chunked(500).forEach { dao.movePdfs(it, target) } }
+    /** Moves PDFs and offers Undo, which puts every PDF back in the folder it came from. */
+    fun movePdfs(ids: List<Long>, target: Long?) {
+        val before = allPdfs.value.filter { it.id in ids }.groupBy({ it.folderId }, { it.id })
+        viewModelScope.launch { ids.chunked(500).forEach { dao.movePdfs(it, target) } }
+        if (before.keys.all { it == target }) return
+        val msg = (if (ids.size == 1) "Moved" else "Moved ${ids.size} PDFs") + " to ${folderName(target)}"
+        undo = UndoNote(msg) {
+            viewModelScope.launch { before.forEach { (old, group) -> group.chunked(500).forEach { dao.movePdfs(it, old) } } }
+        }
+    }
     fun setFavorite(ids: List<Long>, fav: Boolean) = viewModelScope.launch { ids.chunked(500).forEach { dao.setFavorite(it, fav) } }
     /** Opens the right dialog (or acts straight away) for the ⋮ menu on a PDF row. */
     fun rowAction(p: PdfEntity, a: PdfMenuAction) {

@@ -268,7 +268,10 @@ fun LibraryScreen(vm: LibraryVm) {
             confirmButton = { TextButton(onClick = { vm.deleteFolder(d.f); dlg = null }) { Text("Delete", color = pal.accent) } },
             dismissButton = { TextButton(onClick = { dlg = null }) { Text("Cancel") } }
         )
-        is Dlg.MoveFolder -> FolderPicker(folders, descendants(d.f.id, folders), "Move “${d.f.name}” to", { vm.moveFolder(d.f.id, it); dlg = null }, { dlg = null })
+        is Dlg.MoveFolder -> FolderPicker(
+            folders, descendants(d.f.id, folders), "Move “${d.f.name}” to", { vm.moveFolder(d.f.id, it); dlg = null }, { dlg = null },
+            current = setOf(d.f.parentId), stats = stats, onNewFolder = { n, c, par -> vm.createFolder(n, c, par) }
+        )
         null -> {}
     }
 }
