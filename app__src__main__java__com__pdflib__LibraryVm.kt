@@ -61,6 +61,9 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     var invert by mutableStateOf(prefs.getBoolean("invert", false))
     fun updateInvert(v: Boolean) { invert = v; prefs.edit().putBoolean("invert", v).apply() }
 
+    var themeMode by mutableStateOf(ThemeMode.fromKey(prefs.getString("theme", null)))
+    fun updateTheme(m: ThemeMode) { themeMode = m; prefs.edit().putString("theme", m.key).apply() }
+
     init {
         refreshSources()
         rescan()

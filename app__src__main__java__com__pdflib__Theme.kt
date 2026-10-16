@@ -26,9 +26,24 @@ val FolderTones = listOf(
     Color(0xFF2F7F79), Color(0xFF4B5FA8), Color(0xFF8A4B7A)
 )
 
+/** How Shelf picks its colours: follow the phone, or stay light or dark whatever the phone does. */
+enum class ThemeMode(val key: String, val label: String) {
+    System("system", "System"), Light("light", "Light"), Dark("dark", "Dark");
+
+    companion object {
+        fun fromKey(key: String?): ThemeMode = values().firstOrNull { it.key == key } ?: System
+    }
+}
+
 @Composable
-fun PdfLibTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+fun isDarkFor(mode: ThemeMode): Boolean = when (mode) {
+    ThemeMode.Light -> false
+    ThemeMode.Dark -> true
+    ThemeMode.System -> isSystemInDarkTheme()
+}
+
+@Composable
+fun PdfLibTheme(dark: Boolean, content: @Composable () -> Unit) {
     val p = if (dark) DarkPal else LightPal
     val scheme = if (dark) darkColorScheme(
         primary = p.accent, onPrimary = Color.White, background = p.bg, onBackground = p.ink,

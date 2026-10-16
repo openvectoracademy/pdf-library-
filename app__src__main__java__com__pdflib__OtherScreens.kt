@@ -14,11 +14,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,9 +33,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.text.SimpleDateFormat
@@ -130,22 +137,209 @@ private fun treeLabel(uri: Uri): String {
     return id.substringAfter(':', id).ifEmpty { "Internal storage" }
 }
 
+
+// ───────────────────────── Settings building blocks ─────────────────────────
+
+private val CardShape = RoundedCornerShape(20.dp)
+
+/** A titled group: small caps label, one rounded card, and an optional footnote underneath. */
 @Composable
-private fun SettingRow(icon: ImageVector, title: String, sub: String? = null, tint: Color = LocalPal.current.ink, onClick: () -> Unit) {
+private fun SettingsSection(label: String, footer: String? = null, content: @Composable ColumnScope.() -> Unit) {
     val pal = LocalPal.current
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, tint = tint, modifier = Modifier.size(22.dp))
-        Spacer(Modifier.width(16.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 15.sp, color = pal.ink, fontWeight = FontWeight.Medium)
-            if (sub != null) Text(sub, fontSize = 12.sp, color = pal.soft)
+    Column(Modifier.fillMaxWidth().padding(top = 26.dp)) {
+        Text(
+            label.uppercase(), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp,
+            color = pal.soft, modifier = Modifier.padding(start = 32.dp, end = 32.dp, bottom = 8.dp)
+        )
+        Column(
+            Modifier.padding(horizontal = 16.dp).fillMaxWidth().clip(CardShape).background(pal.surface).border(1.dp, pal.line, CardShape),
+            content = content
+        )
+        if (footer != null) {
+            Text(footer, fontSize = 12.sp, lineHeight = 17.sp, color = pal.soft, modifier = Modifier.padding(start = 32.dp, end = 32.dp, top = 8.dp))
         }
     }
 }
 
 @Composable
+private fun RowDivider(inset: Dp = 68.dp) {
+    Box(Modifier.padding(start = inset).fillMaxWidth().height(1.dp).background(LocalPal.current.line))
+}
+
+@Composable
+private fun IconTile(icon: ImageVector, tint: Color) {
+    Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(tint.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(20.dp))
+    }
+}
+
+/** The shared look of every settings row. [modifier] carries the click or toggle behaviour. */
+@Composable
+private fun RowShell(
+    icon: ImageVector, title: String, sub: String?, tint: Color, modifier: Modifier, trailing: (@Composable () -> Unit)?
+) {
+    val pal = LocalPal.current
+    Row(
+        modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconTile(icon, tint)
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 15.sp, color = pal.ink, fontWeight = FontWeight.Medium)
+            if (sub != null) Text(sub, fontSize = 12.sp, lineHeight = 16.sp, color = pal.soft)
+        }
+        if (trailing != null) {
+            Spacer(Modifier.width(8.dp))
+            trailing()
+        }
+    }
+}
+
+@Composable
+private fun SettingRow(
+    icon: ImageVector, title: String, sub: String? = null, tint: Color = LocalPal.current.accent,
+    trailing: (@Composable () -> Unit)? = null, onClick: () -> Unit
+) {
+    RowShell(icon, title, sub, tint, Modifier.clickable(onClick = onClick), trailing)
+}
+
+@Composable
+private fun SwitchRow(icon: ImageVector, title: String, sub: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    val pal = LocalPal.current
+    RowShell(
+        icon, title, sub, pal.accent, Modifier.toggleable(value = checked, role = Role.Switch, onValueChange = onChange),
+        trailing = {
+            Switch(
+                checked = checked, onCheckedChange = null,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White, checkedTrackColor = pal.accent, checkedBorderColor = pal.accent,
+                    uncheckedThumbColor = pal.soft, uncheckedTrackColor = pal.chip, uncheckedBorderColor = pal.line
+                )
+            )
+        }
+    )
+}
+
+@Composable
+private fun StatusChip(text: String, color: Color, icon: ImageVector) {
+    Row(
+        Modifier.clip(RoundedCornerShape(50)).background(color.copy(alpha = 0.14f)).padding(start = 6.dp, end = 9.dp, top = 3.dp, bottom = 3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, tint = color, modifier = Modifier.size(13.dp))
+        Spacer(Modifier.width(4.dp))
+        Text(text, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = color)
+    }
+}
+
+@Composable
+private fun StatTile(value: Int, label: String, modifier: Modifier = Modifier) {
+    val pal = LocalPal.current
+    Column(modifier.clip(RoundedCornerShape(14.dp)).background(pal.chip).padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(value.toString(), fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = pal.ink)
+        Text(label, fontSize = 12.sp, color = pal.soft)
+    }
+}
+
+@Composable
+private fun SourceRow(label: String, canEdit: Boolean, onFix: () -> Unit, onRemove: () -> Unit) {
+    val pal = LocalPal.current
+    val ok = if (pal.dark) Color(0xFF8FBF6A) else Color(0xFF4C7A2E)
+    Row(
+        Modifier.fillMaxWidth().then(if (canEdit) Modifier else Modifier.clickable(onClick = onFix))
+            .padding(start = 16.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconTile(Icons.Rounded.Folder, if (canEdit) ok else pal.accent)
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(label, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = pal.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(5.dp))
+            if (canEdit) {
+                StatusChip("Can rename and delete", ok, Icons.Rounded.CheckCircle)
+            } else {
+                StatusChip("Read-only", pal.accent, Icons.Rounded.Lock)
+                Text(
+                    "Tap, then choose this folder again to allow renaming and deleting.",
+                    fontSize = 12.sp, lineHeight = 16.sp, color = pal.soft, modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
+        IconButton(onClick = onRemove) { Icon(Icons.Rounded.Close, "Stop using this folder", tint = pal.soft) }
+    }
+}
+
+// ───────────────────────── Theme picker ─────────────────────────
+
+/** A tiny drawing of the app in one palette, so the choice is visible before it is made. */
+@Composable
+private fun MiniApp(p: Pal, modifier: Modifier, pad: Dp) {
+    Column(modifier.background(p.bg).padding(pad), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(Modifier.size(width = 14.dp, height = 6.dp).clip(RoundedCornerShape(3.dp)).background(p.accent))
+        Box(Modifier.fillMaxWidth(0.7f).height(8.dp).clip(RoundedCornerShape(4.dp)).background(p.ink))
+        repeat(2) {
+            val r = RoundedCornerShape(7.dp)
+            Column(
+                Modifier.fillMaxWidth().clip(r).background(p.surface).border(1.dp, p.line, r).padding(5.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Box(Modifier.fillMaxWidth(0.85f).height(4.dp).clip(RoundedCornerShape(2.dp)).background(p.ink))
+                Box(Modifier.fillMaxWidth(0.5f).height(3.dp).clip(RoundedCornerShape(2.dp)).background(p.soft))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThemeCard(mode: ThemeMode, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val pal = LocalPal.current
+    val edge by animateColorAsState(if (selected) pal.accent else pal.line, label = "themeEdge")
+    val shape = RoundedCornerShape(16.dp)
+    Column(
+        modifier.clip(shape).border(2.dp, edge, shape)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .padding(6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Row(Modifier.fillMaxWidth().height(96.dp).clip(RoundedCornerShape(10.dp))) {
+            when (mode) {
+                ThemeMode.Light -> MiniApp(LightPal, Modifier.weight(1f).fillMaxHeight(), 8.dp)
+                ThemeMode.Dark -> MiniApp(DarkPal, Modifier.weight(1f).fillMaxHeight(), 8.dp)
+                ThemeMode.System -> {
+                    MiniApp(LightPal, Modifier.weight(1f).fillMaxHeight(), 5.dp)
+                    MiniApp(DarkPal, Modifier.weight(1f).fillMaxHeight(), 5.dp)
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.padding(bottom = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(18.dp).clip(CircleShape)
+                    .background(if (selected) pal.accent else Color.Transparent)
+                    .border(1.5.dp, if (selected) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) { if (selected) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(12.dp)) }
+            Spacer(Modifier.width(6.dp))
+            Text(mode.label, fontSize = 13.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium, color = pal.ink)
+        }
+    }
+}
+
+@Composable
+private fun ThemePicker(mode: ThemeMode, onPick: (ThemeMode) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(14.dp).selectableGroup(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        ThemeMode.values().forEach { m -> ThemeCard(m, m == mode, Modifier.weight(1f)) { onPick(m) } }
+    }
+}
+
+// ───────────────────────── Settings screen ─────────────────────────
+
+@Suppress("DEPRECATION")
+@Composable
 fun SettingsScreen(vm: LibraryVm) {
     val pal = LocalPal.current
+    val ctx = LocalContext.current
     val pdfs by vm.pdfs.collectAsState()
     val folders by vm.folders.collectAsState()
     val bms by vm.bookmarks.collectAsState()
@@ -155,57 +349,115 @@ fun SettingsScreen(vm: LibraryVm) {
     val add = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) vm.addSource(u) }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { u -> if (u != null) vm.exportBackup(u) }
     val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) vm.importBackup(u) }
+    val version = remember { try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "" } catch (e: Exception) { "" } }
 
-    LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
+    LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 32.dp)) {
         item { AppHeader(onSearch = null) }
-        item { Text("Settings", fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 36.sp, color = pal.ink, modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 12.dp)) }
+        item { Text("Settings", fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 36.sp, color = pal.ink, modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 0.dp)) }
 
-        item { Overline("PDF folders", Modifier.padding(start = 16.dp, top = 12.dp, bottom = 2.dp)) }
-        items(vm.sources, key = { it.toString() }) { u ->
-            val canEdit = u.toString() in vm.writable
-            Row(
-                Modifier.fillMaxWidth().clickable(enabled = !canEdit) { add.launch(null) }.padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Rounded.Folder, null, tint = pal.soft, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.width(16.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(treeLabel(u), fontSize = 15.sp, color = pal.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(
-                        if (canEdit) "Can rename and delete files" else "Read-only. Tap, then choose this folder again to allow renaming and deleting.",
-                        fontSize = 12.sp, lineHeight = 16.sp, color = if (canEdit) pal.soft else pal.accent
-                    )
+        item {
+            SettingsSection(
+                "Appearance",
+                footer = when (vm.themeMode) {
+                    ThemeMode.System -> "Shelf switches between light and dark together with your phone."
+                    ThemeMode.Light -> "Shelf stays light, whatever your phone is set to."
+                    ThemeMode.Dark -> "Shelf stays dark, easier on the eyes at night."
                 }
-                IconButton(onClick = { confirmSource = u }) { Icon(Icons.Rounded.Close, "Remove", tint = pal.soft) }
+            ) {
+                ThemePicker(vm.themeMode) { vm.updateTheme(it) }
+                RowDivider()
+                SwitchRow(
+                    Icons.Rounded.InvertColors, "Night reading", "Invert PDF pages in the reader for dark rooms",
+                    vm.invert
+                ) { vm.updateInvert(it) }
             }
         }
-        item { SettingRow(Icons.Rounded.Add, "Add a folder", "Subfolders are included automatically", pal.accent) { add.launch(null) } }
-        item { SettingRow(Icons.Rounded.Refresh, if (vm.scanning) "Scanning… ${vm.scanFound} found" else "Rescan now", "Also runs every time you open Shelf") { vm.rescan() } }
 
-        item { Overline("Your library", Modifier.padding(start = 16.dp, top = 24.dp, bottom = 2.dp)) }
         item {
-            SettingRow(Icons.Rounded.VisibilityOff, "Removed PDFs", if (removed.isEmpty()) "Nothing removed" else "${removed.size} hidden from Shelf, files untouched") { showRemoved = true }
-        }
-
-        item { Overline("Backup", Modifier.padding(start = 16.dp, top = 24.dp, bottom = 2.dp)) }
-        item {
-            SettingRow(Icons.Rounded.Backup, "Export backup", "Folders, stars, bookmarks and progress as a small file") {
-                export.launch("shelf-backup-" + SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()) + ".json")
+            SettingsSection("PDF folders", footer = "Subfolders are included automatically.") {
+                if (vm.sources.isEmpty()) {
+                    Text(
+                        "No folders yet. Add one so Shelf can find your PDFs.",
+                        fontSize = 13.sp, lineHeight = 19.sp, color = pal.soft, modifier = Modifier.padding(16.dp)
+                    )
+                    RowDivider()
+                }
+                vm.sources.forEach { u ->
+                    key(u.toString()) {
+                        SourceRow(treeLabel(u), u.toString() in vm.writable, onFix = { add.launch(null) }, onRemove = { confirmSource = u })
+                        RowDivider()
+                    }
+                }
+                SettingRow(Icons.Rounded.Add, "Add a folder", "Pick any folder on your phone") { add.launch(null) }
+                RowDivider()
+                SettingRow(
+                    Icons.Rounded.Refresh, if (vm.scanning) "Scanning… ${vm.scanFound} found" else "Rescan now", "Also runs every time you open Shelf",
+                    tint = pal.ink,
+                    trailing = { if (vm.scanning) CircularProgressIndicator(Modifier.size(20.dp), color = pal.accent, strokeWidth = 2.dp) }
+                ) { vm.rescan() }
             }
         }
-        item { SettingRow(Icons.Rounded.Restore, "Restore backup", "Matches PDFs by location, then by name and size") { import.launch(arrayOf("application/json", "*/*")) } }
 
-        item { Overline("About", Modifier.padding(start = 16.dp, top = 24.dp, bottom = 6.dp)) }
         item {
-            Text("${pdfs.size} PDFs · ${folders.size} folders · ${bms.size} bookmarks\n\nShelf works fully offline. Your PDFs stay where they are, and only the organisation is stored on this phone.",
-                fontSize = 13.sp, lineHeight = 19.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 16.dp))
+            SettingsSection("Your library") {
+                SettingRow(
+                    Icons.Rounded.VisibilityOff, "Removed PDFs",
+                    if (removed.isEmpty()) "Nothing removed" else "Hidden from Shelf, the files are untouched",
+                    tint = pal.ink,
+                    trailing = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (removed.isNotEmpty()) {
+                                Text(
+                                    removed.size.toString(), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = pal.accent,
+                                    modifier = Modifier.clip(RoundedCornerShape(50)).background(pal.accent.copy(alpha = 0.14f)).padding(horizontal = 9.dp, vertical = 3.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            Icon(Icons.Rounded.ChevronRight, null, tint = pal.soft)
+                        }
+                    }
+                ) { showRemoved = true }
+            }
         }
+
         item {
-            Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 24.dp)) {
-                Text("Developed by", fontSize = 12.sp, color = pal.soft)
-                Spacer(Modifier.height(2.dp))
-                Text("Md. Al Amin", fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = pal.ink)
-                Text("Barguna, Bangladesh", fontSize = 13.sp, color = pal.soft)
+            SettingsSection("Backup", footer = "A backup is one small file. It never contains your PDFs.") {
+                SettingRow(Icons.Rounded.Backup, "Export backup", "Folders, stars, bookmarks and progress") {
+                    export.launch("shelf-backup-" + SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()) + ".json")
+                }
+                RowDivider()
+                SettingRow(Icons.Rounded.Restore, "Restore backup", "Matches PDFs by location, then by name and size") {
+                    import.launch(arrayOf("application/json", "*/*"))
+                }
+            }
+        }
+
+        item {
+            SettingsSection("About") {
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    LogoMark(34.dp)
+                    Spacer(Modifier.width(22.dp))
+                    Column {
+                        Text("Shelf", fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = pal.ink)
+                        if (version.isNotEmpty()) Text("Version $version", fontSize = 12.sp, color = pal.soft)
+                    }
+                }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    StatTile(pdfs.size, "PDFs", Modifier.weight(1f))
+                    StatTile(folders.size, "Folders", Modifier.weight(1f))
+                    StatTile(bms.size, "Bookmarks", Modifier.weight(1f))
+                }
+                Text(
+                    "Shelf works fully offline. Your PDFs stay where they are, and only the organisation is stored on this phone.",
+                    fontSize = 13.sp, lineHeight = 19.sp, color = pal.soft, modifier = Modifier.padding(16.dp)
+                )
+                RowDivider(0.dp)
+                Column(Modifier.padding(16.dp)) {
+                    Text("Developed by", fontSize = 12.sp, color = pal.soft)
+                    Spacer(Modifier.height(2.dp))
+                    Text("Md. Al Amin", fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = pal.ink)
+                    Text("Barguna, Bangladesh", fontSize = 13.sp, color = pal.soft)
+                }
             }
         }
     }

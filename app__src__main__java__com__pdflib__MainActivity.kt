@@ -1,6 +1,8 @@
 package com.pdflib
 
+import android.graphics.Color as AColor
 import android.os.Bundle
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -32,7 +34,19 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { PdfLibTheme { Root() } }
+        setContent {
+            val vm: LibraryVm = viewModel()
+            val dark = isDarkFor(vm.themeMode)
+            // Status and navigation bar icons must flip with the chosen theme, not only with the phone's.
+            DisposableEffect(dark) {
+                enableEdgeToEdge(
+                    statusBarStyle = SystemBarStyle.auto(AColor.TRANSPARENT, AColor.TRANSPARENT) { dark },
+                    navigationBarStyle = SystemBarStyle.auto(AColor.TRANSPARENT, AColor.TRANSPARENT) { dark }
+                )
+                onDispose { }
+            }
+            PdfLibTheme(dark) { Root(vm) }
+        }
     }
 }
 
