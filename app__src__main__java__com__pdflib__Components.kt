@@ -118,6 +118,7 @@ enum class PdfMenuAction { Pin, Rename, Move, Remove, Delete }
 sealed interface PdfDlg {
     class Rename(val pdf: PdfEntity) : PdfDlg
     class Move(val ids: List<Long>, val folderIds: List<Long> = emptyList()) : PdfDlg
+    class RemoveItems(val pdfIds: List<Long>, val folderIds: List<Long>) : PdfDlg
     /** [title] is only used when a single PDF is being deleted. */
     class Delete(val ids: List<Long>, val title: String) : PdfDlg
 }
@@ -668,13 +669,29 @@ fun PdfDialogHost(vm: LibraryVm) {
                 subtitle = one, current = cur, stats = stats, onNewFolder = { nm, c, par -> vm.createFolder(nm, c, par) }
             )
         }
+        is PdfDlg.RemoveItems -> {
+            val n = d.pdfIds.size + d.folderIds.size
+            val what = if (n == 1) (if (d.folderIds.isNotEmpty()) "this folder" else "this PDF") else "these $n items"
+            AlertDialog(
+                onDismissRequest = { vm.pdfDialog = null }, containerColor = pal.surface,
+                title = { Text("Remove $what from Shelf?", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
+                text = {
+                    Text(
+                        (if (d.folderIds.isNotEmpty()) "A removed folder takes everything inside it along. " else "") +
+                            "Your files stay on your phone, and you can restore everything any time in Settings › Your library."
+                    )
+                },
+                confirmButton = { TextButton(onClick = { vm.removeItems(d.pdfIds, d.folderIds); vm.pdfDialog = null }) { Text("Remove", color = pal.accent) } },
+                dismissButton = { TextButton(onClick = { vm.pdfDialog = null }) { Text("Cancel") } }
+            )
+        }
         is PdfDlg.Delete -> AlertDialog(
             onDismissRequest = { vm.pdfDialog = null }, containerColor = pal.surface,
             title = {
                 Text(if (d.ids.size == 1) "Delete “${d.title}”?" else "Delete ${d.ids.size} PDFs?", fontFamily = Serif, fontWeight = FontWeight.SemiBold)
             },
             text = { Text("This permanently deletes the file from your phone and can't be undone. To keep the file, choose Remove from Shelf instead.") },
-            confirmButton = { TextButton(onClick = { vm.deleteFromPhone(d.ids); vm.pdfDialog = null }) { Text("Delete", color = pal.accent) } },
+            confirmButton = { TextButton(onClick = { vm.deleteFromPhone(d.ids); vm.pdfDialog = null }) { Text("Delete forever", color = pal.accent) } },
             dismissButton = { TextButton(onClick = { vm.pdfDialog = null }) { Text("Cancel") } }
         )
         null -> {}

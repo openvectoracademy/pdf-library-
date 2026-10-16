@@ -157,7 +157,7 @@ fun LibraryScreen(vm: LibraryVm) {
                                 more = false
                                 vm.setPdfPinned(selPdfs, !allPinned); vm.setFoldersPinned(selFolders, !allPinned); vm.clearSel()
                             })
-                            DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { more = false; vm.removeItems(selPdfs, selFolders) })
+                            DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { more = false; vm.pdfDialog = PdfDlg.RemoveItems(selPdfs, selFolders) })
                             if (selFolders.isEmpty()) DropdownMenuItem(text = { Text("Delete from phone", color = pal.accent) }, onClick = {
                                 more = false
                                 vm.pdfDialog = PdfDlg.Delete(selPdfs, pdfs.firstOrNull { it.id == selPdfs.firstOrNull() }?.title() ?: "")

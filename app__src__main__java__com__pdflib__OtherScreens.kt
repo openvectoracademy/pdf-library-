@@ -368,7 +368,8 @@ fun SettingsScreen(vm: LibraryVm) {
     var confirmSource by remember { mutableStateOf<Uri?>(null) }
     val add = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) vm.addSource(u) }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { u -> if (u != null) vm.exportBackup(u) }
-    val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) vm.importBackup(u) }
+    var pendingRestore by remember { mutableStateOf<Uri?>(null) }
+    val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) pendingRestore = u }
     val version = remember { try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "" } catch (e: Exception) { "" } }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -515,11 +516,36 @@ fun SettingsScreen(vm: LibraryVm) {
         )
     }
 
+    pendingRestore?.let { u ->
+        AlertDialog(
+            onDismissRequest = { pendingRestore = null }, containerColor = pal.surface,
+            title = { Text("Restore this backup?", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text("Your current folders and bookmarks are replaced by the ones in the backup, and matching PDFs get back their stars, progress and pins. Your PDFs on the phone are not touched.")
+            },
+            confirmButton = { TextButton(onClick = { vm.importBackup(u); pendingRestore = null }) { Text("Restore", color = pal.accent) } },
+            dismissButton = { TextButton(onClick = { pendingRestore = null }) { Text("Cancel") } }
+        )
+    }
+
     if (showRemoved) ModalBottomSheet(onDismissRequest = { showRemoved = false }, containerColor = pal.surface) {
         val picked = remember { mutableStateListOf<Long>() }
         // Rows that disappear (restored, or changed elsewhere) are dropped from the selection.
         LaunchedEffect(removed) { picked.retainAll { id -> removed.any { it.id == id } } }
         val allPicked = removed.isNotEmpty() && picked.size == removed.size
+        var confirmDelete by remember { mutableStateOf(false) }
+        if (confirmDelete && picked.isNotEmpty()) {
+            val one = picked.size == 1
+            AlertDialog(
+                onDismissRequest = { confirmDelete = false }, containerColor = pal.surface,
+                title = { Text(if (one) "Delete this PDF from your phone?" else "Delete ${picked.size} PDFs from your phone?", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
+                text = {
+                    Text("This permanently deletes the file" + (if (one) "" else "s") + " from your phone and can't be undone. Bookmarks and reading progress are deleted too.")
+                },
+                confirmButton = { TextButton(onClick = { vm.deleteFromPhone(picked.toList()); picked.clear(); confirmDelete = false }) { Text("Delete forever", color = pal.accent) } },
+                dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
+            )
+        }
         Column(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
             Text(
                 "Removed from Shelf", fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = pal.ink,
@@ -532,9 +558,11 @@ fun SettingsScreen(vm: LibraryVm) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = {
                         if (allPicked) picked.clear() else { picked.clear(); picked.addAll(removed.map { it.id }) }
-                    }) { Text(if (allPicked) "Clear selection" else "Select all", color = pal.accent) }
+                    }) { Text(if (allPicked) "Clear" else "Select all", color = pal.accent) }
                     Spacer(Modifier.weight(1f))
                     if (picked.isNotEmpty()) {
+                        TextButton(onClick = { confirmDelete = true }) { Text("Delete (${picked.size})", color = pal.accent) }
+                        Spacer(Modifier.width(4.dp))
                         Button(
                             onClick = { vm.restoreToShelf(picked.toList()); picked.clear() },
                             shape = RoundedCornerShape(12.dp),
@@ -544,7 +572,7 @@ fun SettingsScreen(vm: LibraryVm) {
                         TextButton(onClick = { vm.restoreToShelf(removed.map { it.id }) }) { Text("Restore all", color = pal.accent) }
                     }
                 }
-                if (picked.isEmpty()) Text("Tap PDFs to pick several and restore them together.", fontSize = 12.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp))
+                if (picked.isEmpty()) Text("Tap PDFs to pick several, then restore or delete them. Delete removes the files from your phone.", fontSize = 12.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp))
             }
             LazyColumn(Modifier.heightIn(max = 420.dp)) {
                 items(removed, key = { it.id }) { p ->
@@ -576,6 +604,30 @@ fun SettingsScreen(vm: LibraryVm) {
         val picked = remember { mutableStateListOf<Long>() }
         LaunchedEffect(removedFolders) { picked.retainAll { id -> removedFolders.any { it.folder.id == id } } }
         val allPicked = removedFolders.isNotEmpty() && picked.size == removedFolders.size
+        var confirmDelete by remember { mutableStateOf(false) }
+        val chosen = removedFolders.filter { it.folder.id in picked }
+        if (confirmDelete && chosen.isNotEmpty()) {
+            val pdfTotal = chosen.sumOf { it.pdfs }
+            val pp = if (pdfTotal == 1) "" else "s"
+            AlertDialog(
+                onDismissRequest = { confirmDelete = false }, containerColor = pal.surface,
+                title = {
+                    Text(
+                        if (chosen.size == 1) "Delete “${chosen[0].folder.name}” forever?" else "Delete ${chosen.size} folders forever?",
+                        fontFamily = Serif, fontWeight = FontWeight.SemiBold
+                    )
+                },
+                text = {
+                    Text(
+                        "The folder" + (if (chosen.size == 1) "" else "s") + " and any subfolders are deleted from Shelf for good." +
+                            (if (pdfTotal > 0) " The $pdfTotal PDF$pp inside stay safe: they move to Removed PDFs, where you can restore or delete them." else "") +
+                            " Files on your phone are not touched."
+                    )
+                },
+                confirmButton = { TextButton(onClick = { vm.deleteFoldersForever(picked.toList()); picked.clear(); confirmDelete = false }) { Text("Delete forever", color = pal.accent) } },
+                dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
+            )
+        }
         Column(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
             Text(
                 "Removed folders", fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = pal.ink,
@@ -590,9 +642,11 @@ fun SettingsScreen(vm: LibraryVm) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = {
                         if (allPicked) picked.clear() else { picked.clear(); picked.addAll(removedFolders.map { it.folder.id }) }
-                    }) { Text(if (allPicked) "Clear selection" else "Select all", color = pal.accent) }
+                    }) { Text(if (allPicked) "Clear" else "Select all", color = pal.accent) }
                     Spacer(Modifier.weight(1f))
                     if (picked.isNotEmpty()) {
+                        TextButton(onClick = { confirmDelete = true }) { Text("Delete (${picked.size})", color = pal.accent) }
+                        Spacer(Modifier.width(4.dp))
                         Button(
                             onClick = { vm.restoreFolders(picked.toList()); picked.clear() },
                             shape = RoundedCornerShape(12.dp),
@@ -603,7 +657,7 @@ fun SettingsScreen(vm: LibraryVm) {
                     }
                 }
                 if (picked.isEmpty()) Text(
-                    "Restoring a folder brings back all of its PDFs and subfolders.",
+                    "Tap folders to pick several, then restore or delete them. Restoring brings back all their PDFs and subfolders.",
                     fontSize = 12.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
                 )
             }

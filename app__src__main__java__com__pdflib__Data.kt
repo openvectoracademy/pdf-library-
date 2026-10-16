@@ -76,6 +76,7 @@ interface LibDao {
     @Query("UPDATE folders SET parentId=:newParent WHERE parentId=:old") suspend fun reparentChildren(old: Long, newParent: Long?)
     @Query("UPDATE pdfs SET folderId=:newF WHERE folderId=:old") suspend fun reparentPdfs(old: Long, newF: Long?)
     @Query("DELETE FROM folders WHERE id=:id") suspend fun deleteFolder(id: Long)
+    @Query("DELETE FROM folders WHERE id IN (:ids)") suspend fun deleteFoldersByIds(ids: List<Long>)
     @Query("UPDATE folders SET favorite=:fav WHERE id IN (:ids)") suspend fun setFolderFavorite(ids: List<Long>, fav: Boolean)
     @Query("UPDATE folders SET removed=:r WHERE id IN (:ids)") suspend fun setFoldersRemoved(ids: List<Long>, r: Boolean)
     @Query("UPDATE folders SET parentId=:parent, sortIndex=0 WHERE id IN (:ids)") suspend fun moveFolders(ids: List<Long>, parent: Long?)

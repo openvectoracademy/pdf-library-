@@ -373,6 +373,28 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Deletes removed folders for good, together with every subfolder. No file is touched: PDFs that were inside
+     * stay removed from Shelf (they move to Settings › Removed PDFs, where they can be restored or deleted).
+     */
+    fun deleteFoldersForever(ids: List<Long>) {
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            val all = allFolders.value
+            val gone = HashSet<Long>()
+            ids.forEach { gone.addAll(descendants(it, all)) }
+            val pdfIds = allPdfs.value.filter { p -> val f = p.folderId; f != null && f in gone }.map { it.id }
+            db.withTransaction {
+                pdfIds.chunked(500).forEach { dao.setHidden(it, true); dao.movePdfs(it, null) }
+                gone.toList().chunked(500).forEach { dao.deleteFoldersByIds(it) }
+            }
+            toast(
+                (if (ids.size == 1) "Folder deleted forever" else "${ids.size} folders deleted forever") +
+                    (if (pdfIds.isNotEmpty()) ". Its PDFs are in Removed PDFs." else "")
+            )
+        }
+    }
+
     /** Brings removed folders back. A folder whose parent is gone returns to the top level of the Library. */
     fun restoreFolders(ids: List<Long>, quiet: Boolean = false) {
         if (ids.isEmpty()) return
@@ -418,7 +440,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
             PdfMenuAction.Pin -> setPdfPinned(listOf(p.id), !p.pinned)
             PdfMenuAction.Rename -> pdfDialog = PdfDlg.Rename(p)
             PdfMenuAction.Move -> pdfDialog = PdfDlg.Move(listOf(p.id))
-            PdfMenuAction.Remove -> removeFromShelf(listOf(p.id))
+            PdfMenuAction.Remove -> pdfDialog = PdfDlg.RemoveItems(listOf(p.id), emptyList())
             PdfMenuAction.Delete -> pdfDialog = PdfDlg.Delete(listOf(p.id), p.title())
         }
     }
