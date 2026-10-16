@@ -12,6 +12,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.selection.selectable
@@ -351,8 +352,14 @@ fun SettingsScreen(vm: LibraryVm) {
     val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) vm.importBackup(u) }
     val version = remember { try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "" } catch (e: Exception) { "" } }
 
-    LazyColumn(Modifier.fillMaxSize().statusBarsPadding(), contentPadding = PaddingValues(bottom = 32.dp)) {
-        item { AppHeader(onSearch = null) }
+    val listState = rememberLazyListState()
+    val scrolled by remember { derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 } }
+
+    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+    // The logo bar stays pinned; a hairline appears under it once the content scrolls beneath.
+    AppHeader(onSearch = null)
+    Box(Modifier.fillMaxWidth().height(1.dp).background(if (scrolled) pal.line else Color.Transparent))
+    LazyColumn(Modifier.weight(1f), state = listState, contentPadding = PaddingValues(bottom = 32.dp)) {
         item { Text("Settings", fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 36.sp, color = pal.ink, modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 0.dp)) }
 
         item {
@@ -460,6 +467,7 @@ fun SettingsScreen(vm: LibraryVm) {
                 }
             }
         }
+    }
     }
 
     confirmSource?.let { u ->
