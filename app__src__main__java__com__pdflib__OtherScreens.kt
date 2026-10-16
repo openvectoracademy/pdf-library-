@@ -47,20 +47,38 @@ import java.util.Locale
 
 /** Recent and Saved tabs share this layout. */
 @Composable
-fun PdfListScreen(vm: LibraryVm, title: String, docs: List<PdfEntity>, emptyTitle: String, emptyBody: String) {
+fun PdfListScreen(
+    vm: LibraryVm, title: String, docs: List<PdfEntity>, emptyTitle: String, emptyBody: String,
+    favFolders: List<FolderEntity> = emptyList()
+) {
     val pal = LocalPal.current
     val folders by vm.folders.collectAsState()
+    val allPdfs by vm.pdfs.collectAsState()
     val paths = remember(folders) { folderPaths(folders) }
+    val stats = remember(allPdfs, folders) { FolderStats(allPdfs, folders) }
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         AppHeader(onSearch = { vm.searching = true })
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
             item {
                 Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp)) {
                     Text(title, fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 36.sp, color = pal.ink)
-                    if (docs.isNotEmpty()) Text("${docs.size} PDF" + if (docs.size == 1) "" else "s", fontSize = 13.sp, color = pal.soft)
+                    val parts = ArrayList<String>()
+                    if (favFolders.isNotEmpty()) parts.add("${favFolders.size} folder" + if (favFolders.size == 1) "" else "s")
+                    if (docs.isNotEmpty()) parts.add("${docs.size} PDF" + if (docs.size == 1) "" else "s")
+                    if (parts.isNotEmpty()) Text(parts.joinToString(" · "), fontSize = 13.sp, color = pal.soft)
                 }
             }
-            if (docs.isEmpty()) item { Hint(emptyTitle, emptyBody) }
+            if (docs.isEmpty() && favFolders.isEmpty()) item { Hint(emptyTitle, emptyBody) }
+            if (favFolders.isNotEmpty()) {
+                item(key = "fav-folders") { Overline("Folders", Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp)) }
+                items(favFolders, key = { "sf${it.id}" }) { f ->
+                    FolderRow(
+                        f, stats.subtitle(f.id), onClick = { vm.goToFolder(f.id) }, onEdit = {}, onMove = {}, onDelete = {},
+                        onFav = { vm.setFoldersFavorite(listOf(f.id), !f.favorite) }, menu = false
+                    )
+                }
+                if (docs.isNotEmpty()) item(key = "fav-pdfs") { Overline("PDFs", Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp)) }
+            }
             items(docs, key = { it.id }) { p ->
                 PdfRow(p, p.folderId?.let { paths[it] } ?: "Unsorted", false, false,
                     onClick = { vm.openReader(p.id) }, onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
@@ -344,7 +362,9 @@ fun SettingsScreen(vm: LibraryVm) {
     val folders by vm.folders.collectAsState()
     val bms by vm.bookmarks.collectAsState()
     val removed by vm.hidden.collectAsState()
+    val removedFolders by vm.removedFolders.collectAsState()
     var showRemoved by remember { mutableStateOf(false) }
+    var showRemovedFolders by remember { mutableStateOf(false) }
     var confirmSource by remember { mutableStateOf<Uri?>(null) }
     val add = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) vm.addSource(u) }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { u -> if (u != null) vm.exportBackup(u) }
@@ -402,6 +422,24 @@ fun SettingsScreen(vm: LibraryVm) {
 
         item {
             SettingsSection("Your library") {
+                SettingRow(
+                    Icons.Rounded.Folder, "Removed folders",
+                    if (removedFolders.isEmpty()) "Nothing removed" else "Come back with everything inside them",
+                    tint = pal.ink,
+                    trailing = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (removedFolders.isNotEmpty()) {
+                                Text(
+                                    removedFolders.size.toString(), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = pal.accent,
+                                    modifier = Modifier.clip(RoundedCornerShape(50)).background(pal.accent.copy(alpha = 0.14f)).padding(horizontal = 9.dp, vertical = 3.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            Icon(Icons.Rounded.ChevronRight, null, tint = pal.soft)
+                        }
+                    }
+                ) { showRemovedFolders = true }
+                RowDivider()
                 SettingRow(
                     Icons.Rounded.VisibilityOff, "Removed PDFs",
                     if (removed.isEmpty()) "Nothing removed" else "Hidden from Shelf, the files are untouched",
@@ -527,6 +565,78 @@ fun SettingsScreen(vm: LibraryVm) {
                         Spacer(Modifier.width(14.dp))
                         Text(p.title(), Modifier.weight(1f).padding(vertical = 12.dp), fontSize = 15.sp, color = pal.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         if (picked.isEmpty()) TextButton(onClick = { vm.restoreToShelf(listOf(p.id)) }) { Text("Restore", color = pal.accent) }
+                        else Spacer(Modifier.width(8.dp))
+                    }
+                }
+            }
+        }
+    }
+
+    if (showRemovedFolders) ModalBottomSheet(onDismissRequest = { showRemovedFolders = false }, containerColor = pal.surface) {
+        val picked = remember { mutableStateListOf<Long>() }
+        LaunchedEffect(removedFolders) { picked.retainAll { id -> removedFolders.any { it.folder.id == id } } }
+        val allPicked = removedFolders.isNotEmpty() && picked.size == removedFolders.size
+        Column(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
+            Text(
+                "Removed folders", fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = pal.ink,
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp)
+            )
+            if (removedFolders.isEmpty()) {
+                Text(
+                    "Nothing here. A folder you remove waits here, with every PDF and subfolder inside it, until you restore it. Files on your phone are never touched.",
+                    fontSize = 14.sp, lineHeight = 20.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                )
+            } else {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = {
+                        if (allPicked) picked.clear() else { picked.clear(); picked.addAll(removedFolders.map { it.folder.id }) }
+                    }) { Text(if (allPicked) "Clear selection" else "Select all", color = pal.accent) }
+                    Spacer(Modifier.weight(1f))
+                    if (picked.isNotEmpty()) {
+                        Button(
+                            onClick = { vm.restoreFolders(picked.toList()); picked.clear() },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White)
+                        ) { Text("Restore (${picked.size})", fontWeight = FontWeight.SemiBold) }
+                    } else {
+                        TextButton(onClick = { vm.restoreFolders(removedFolders.map { it.folder.id }) }) { Text("Restore all", color = pal.accent) }
+                    }
+                }
+                if (picked.isEmpty()) Text(
+                    "Restoring a folder brings back all of its PDFs and subfolders.",
+                    fontSize = 12.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+                )
+            }
+            LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                items(removedFolders, key = { it.folder.id }) { r ->
+                    val on = r.folder.id in picked
+                    val tone = FolderTones[r.folder.color.mod(FolderTones.size)]
+                    val np = r.pdfs
+                    val nf = r.subfolders
+                    val sub = "$np PDF" + (if (np == 1) "" else "s") + (if (nf > 0) " · $nf folder" + (if (nf == 1) "" else "s") else "")
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .background(if (on) pal.accent.copy(alpha = 0.10f) else Color.Transparent)
+                            .clickable { if (on) picked.remove(r.folder.id) else picked.add(r.folder.id) }
+                            .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier.size(24.dp).clip(CircleShape)
+                                .background(if (on) pal.accent else Color.Transparent)
+                                .border(1.5.dp, if (on) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) { if (on) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp)) }
+                        Spacer(Modifier.width(14.dp))
+                        Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(tone.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
+                            Icon(Icons.Rounded.Folder, null, tint = tone, modifier = Modifier.size(22.dp))
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(r.folder.name, fontFamily = Serif, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = pal.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(sub, fontSize = 12.sp, color = pal.soft)
+                        }
+                        if (picked.isEmpty()) TextButton(onClick = { vm.restoreFolders(listOf(r.folder.id)) }) { Text("Restore", color = pal.accent) }
                         else Spacer(Modifier.width(8.dp))
                     }
                 }

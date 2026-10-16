@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
@@ -25,6 +26,36 @@ import org.json.JSONObject
 /** A short "done · Undo" message shown above the bottom bar. */
 class UndoNote(val message: String, val action: () -> Unit)
 
+/** A removed folder as Settings lists it: what it holds, so people know what Restore brings back. */
+class RemovedFolder(val folder: FolderEntity, val pdfs: Int, val subfolders: Int)
+
+/** Ids of folders that are removed, plus everything inside a removed folder. */
+private fun hiddenFolderIds(all: List<FolderEntity>): Set<Long> {
+    val kids = all.groupBy { it.parentId }
+    val out = HashSet<Long>()
+    fun mark(id: Long) { if (out.add(id)) kids[id]?.forEach { mark(it.id) } }
+    all.filter { it.removed }.forEach { mark(it.id) }
+    return out
+}
+
+/** The removed folders that were removed themselves (not just because a parent was). */
+private fun removedRoots(all: List<FolderEntity>): List<FolderEntity> {
+    val byId = all.associateBy { it.id }
+    fun blocked(f: FolderEntity): Boolean {
+        var p: Long? = f.parentId
+        var n = 0
+        while (n < 50) {
+            val pid = p ?: return false
+            val pf = byId[pid] ?: return false
+            if (pf.removed) return true
+            p = pf.parentId
+            n++
+        }
+        return false
+    }
+    return all.filter { it.removed && !blocked(it) }.sortedBy { it.name.lowercase() }
+}
+
 class LibraryVm(app: Application) : AndroidViewModel(app) {
     private val ctx: Context = app.applicationContext
     private val db = AppDb.get(ctx)
@@ -32,10 +63,21 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     private val prefs = ctx.getSharedPreferences("shelf", Context.MODE_PRIVATE)
 
     var loaded by mutableStateOf(false)
-    val folders = dao.folders().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    private val allFolders = dao.folders().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    /** Folders you can see: not removed, and not inside a removed folder. */
+    val folders = allFolders.map { l -> val gone = hiddenFolderIds(l); l.filter { it.id !in gone } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     private val allPdfs = dao.pdfs().onEach { loaded = true }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     /** What the app shows: everything except PDFs the user removed from Shelf. */
-    val pdfs = allPdfs.map { l -> l.filter { !it.hidden } }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val pdfs = combine(allPdfs, allFolders) { p, f ->
+        val gone = hiddenFolderIds(f)
+        p.filter { pdf -> val fid = pdf.folderId; !pdf.hidden && (fid == null || fid !in gone) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    /** Removed folders waiting in Settings, with how many PDFs come back with each. */
+    val removedFolders = combine(allFolders, allPdfs) { f, p ->
+        val stats = FolderStats(p.filter { !it.hidden }, f)
+        removedRoots(f).map { RemovedFolder(it, stats.pdfCount(it.id), stats.subCount(it.id)) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val hidden = allPdfs.map { l -> l.filter { it.hidden } }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val bookmarks = dao.bookmarks().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
@@ -45,6 +87,10 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     var searching by mutableStateOf(false)
     val stack = mutableStateListOf<Long>()
     val selection = mutableStateListOf<Long>()
+    val folderSelection = mutableStateListOf<Long>()
+    val selectedCount: Int get() = selection.size + folderSelection.size
+    fun clearSel() { selection.clear(); folderSelection.clear() }
+    fun toggleFolderSel(id: Long) { if (id in folderSelection) folderSelection.remove(id) else folderSelection.add(id) }
     val libState = LazyListState()
 
     // scanning
@@ -72,11 +118,11 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     private fun toast(m: String) = Toast.makeText(ctx, m, Toast.LENGTH_LONG).show()
 
     // ---------- navigation ----------
-    fun enter(id: Long) { selection.clear(); stack.add(id) }
-    fun up() { selection.clear(); if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) }
-    fun toBreadcrumb(index: Int) { selection.clear(); while (stack.size > index + 1) stack.removeAt(stack.lastIndex) }
+    fun enter(id: Long) { clearSel(); stack.add(id) }
+    fun up() { clearSel(); if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex) }
+    fun toBreadcrumb(index: Int) { clearSel(); while (stack.size > index + 1) stack.removeAt(stack.lastIndex) }
     fun goToFolder(id: Long?) {
-        selection.clear(); stack.clear()
+        clearSel(); stack.clear()
         if (id != null) {
             val map = folders.value.associateBy { it.id }
             val chain = ArrayList<Long>()
@@ -211,12 +257,35 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     }
     fun updateFolder(id: Long, name: String, color: Int) = viewModelScope.launch { dao.updateFolder(id, name, color) }
     private fun folderName(id: Long?): String = id?.let { t -> folders.value.firstOrNull { it.id == t }?.name } ?: "Library"
-    fun moveFolder(id: Long, target: Long?) {
-        val f = folders.value.firstOrNull { it.id == id } ?: return
-        val old = f.parentId
-        viewModelScope.launch { dao.moveFolder(id, target) }
-        if (old != target) undo = UndoNote("Moved “${f.name}” to ${folderName(target)}") { viewModelScope.launch { dao.moveFolder(id, old) } }
+
+    fun moveFolder(id: Long, target: Long?) = moveItems(emptyList(), listOf(id), target)
+    fun movePdfs(ids: List<Long>, target: Long?) = moveItems(ids, emptyList(), target)
+
+    /** Moves PDFs and folders together. One Undo puts every item back where it came from. */
+    fun moveItems(pdfIds: List<Long>, folderIds: List<Long>, target: Long?) {
+        if (pdfIds.isEmpty() && folderIds.isEmpty()) return
+        val beforeP = allPdfs.value.filter { it.id in pdfIds }.groupBy({ it.folderId }, { it.id })
+        val beforeF = allFolders.value.filter { it.id in folderIds }.groupBy({ it.parentId }, { it.id })
+        viewModelScope.launch {
+            db.withTransaction {
+                pdfIds.chunked(500).forEach { dao.movePdfs(it, target) }
+                folderIds.chunked(500).forEach { dao.moveFolders(it, target) }
+            }
+        }
+        if (beforeP.keys.all { it == target } && beforeF.keys.all { it == target }) return
+        val n = pdfIds.size + folderIds.size
+        val noun = if (folderIds.isEmpty()) "PDFs" else if (pdfIds.isEmpty()) "folders" else "items"
+        val msg = (if (n == 1) "Moved" else "Moved $n $noun") + " to ${folderName(target)}"
+        undo = UndoNote(msg) {
+            viewModelScope.launch {
+                db.withTransaction {
+                    beforeP.forEach { (old, group) -> group.chunked(500).forEach { dao.movePdfs(it, old) } }
+                    beforeF.forEach { (old, group) -> group.chunked(500).forEach { dao.moveFolders(it, old) } }
+                }
+            }
+        }
     }
+
     // ---------- pin + manual order ----------
     /** Pinned PDFs sit above the rest of their folder. Newly pinned ones join the end of the pinned block. */
     fun setPdfPinned(ids: List<Long>, pin: Boolean) {
@@ -250,6 +319,84 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
 
     fun reorderFolders(ids: List<Long>) {
         viewModelScope.launch(Dispatchers.IO) { db.withTransaction { ids.forEachIndexed { i, id -> dao.setFolderOrder(id, i + 1) } } }
+    }
+
+    fun setFoldersFavorite(ids: List<Long>, fav: Boolean) {
+        if (ids.isEmpty()) return
+        viewModelScope.launch { ids.chunked(500).forEach { dao.setFolderFavorite(it, fav) } }
+    }
+
+    /** Pins or unpins several folders at once. Newly pinned ones join the end of their pinned block. */
+    fun setFoldersPinned(ids: List<Long>, pin: Boolean) {
+        if (ids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val all = folders.value
+            db.withTransaction {
+                if (pin) {
+                    all.filter { it.id in ids && !it.pinned }.groupBy { it.parentId }.forEach { (pid, list) ->
+                        var next = (all.filter { it.parentId == pid && it.pinned }.maxOfOrNull { it.sortIndex } ?: 0) + 1
+                        list.forEach { dao.setFolderPin(it.id, true, next++) }
+                    }
+                } else ids.forEach { dao.setFolderPin(it, false, 0) }
+            }
+        }
+    }
+
+    /**
+     * Removes PDFs and folders from Shelf without touching any file. A removed folder takes everything inside it along.
+     * Undo, or Settings › Removed, brings them back exactly as they were.
+     */
+    fun removeItems(pdfIds: List<Long>, folderIds: List<Long>) {
+        if (pdfIds.isEmpty() && folderIds.isEmpty()) return
+        clearSel()
+        val oneFolder = if (pdfIds.isEmpty() && folderIds.size == 1) allFolders.value.firstOrNull { it.id == folderIds[0] }?.name else null
+        viewModelScope.launch {
+            db.withTransaction {
+                pdfIds.chunked(500).forEach { dao.setHidden(it, true) }
+                folderIds.chunked(500).forEach { dao.setFoldersRemoved(it, true) }
+            }
+            val n = pdfIds.size + folderIds.size
+            val noun = if (folderIds.isEmpty()) "PDFs" else if (pdfIds.isEmpty()) "folders" else "items"
+            val msg = when {
+                oneFolder != null -> "“$oneFolder” removed from Shelf"
+                n == 1 -> "Removed from Shelf"
+                else -> "$n $noun removed from Shelf"
+            }
+            undo = UndoNote(msg) {
+                viewModelScope.launch {
+                    db.withTransaction {
+                        pdfIds.chunked(500).forEach { dao.setHidden(it, false) }
+                    }
+                    restoreFolders(folderIds, quiet = true)
+                }
+            }
+        }
+    }
+
+    /** Brings removed folders back. A folder whose parent is gone returns to the top level of the Library. */
+    fun restoreFolders(ids: List<Long>, quiet: Boolean = false) {
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            val all = allFolders.value
+            val byId = all.associateBy { it.id }
+            val gone = hiddenFolderIds(all.map { if (it.id in ids) it.copy(removed = false) else it })
+            var toTop = 0
+            db.withTransaction {
+                ids.forEach { id ->
+                    val parent = byId[id]?.parentId
+                    if (parent != null && (byId[parent] == null || parent in gone)) { dao.moveFolder(id, null); toTop++ }
+                }
+                ids.chunked(500).forEach { dao.setFoldersRemoved(it, false) }
+            }
+            if (!quiet) {
+                undo = null
+                val name = if (ids.size == 1) byId[ids[0]]?.name else null
+                toast(
+                    (if (name != null) "Restored “$name”" else "Restored ${ids.size} folders") +
+                        (if (toTop > 0) " to the Library" else "")
+                )
+            }
+        }
     }
 
     fun deleteFolder(f: FolderEntity) {
@@ -366,7 +513,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
             val uriOf = p.associate { it.id to it.uri }
             val root = JSONObject().put("app", "shelf").put("version", 1)
             root.put("folders", JSONArray().also { a ->
-                f.forEach { a.put(JSONObject().put("id", it.id).put("name", it.name).put("parentId", it.parentId ?: JSONObject.NULL).put("color", it.color).put("pinned", it.pinned).put("sortIndex", it.sortIndex)) }
+                f.forEach { a.put(JSONObject().put("id", it.id).put("name", it.name).put("parentId", it.parentId ?: JSONObject.NULL).put("color", it.color).put("pinned", it.pinned).put("sortIndex", it.sortIndex).put("favorite", it.favorite).put("removed", it.removed)) }
             })
             root.put("pdfs", JSONArray().also { a ->
                 p.filter { it.folderId != null || it.favorite || it.lastPage > 0 || it.label != null || it.hidden || it.pinned || it.sortIndex > 0 }.forEach {
@@ -403,7 +550,8 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                     dao.insertFolder(FolderEntity(
                         id = o.getLong("id"), name = o.getString("name"),
                         parentId = if (o.isNull("parentId")) null else o.getLong("parentId"), color = o.optInt("color"),
-                        pinned = o.optBoolean("pinned", false), sortIndex = o.optInt("sortIndex", 0)
+                        pinned = o.optBoolean("pinned", false), sortIndex = o.optInt("sortIndex", 0),
+                        favorite = o.optBoolean("favorite", false), removed = o.optBoolean("removed", false)
                     ))
                 }
                 val idByUri = HashMap<String, Long>()
@@ -424,7 +572,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                     idByUri[o.getString("pdfUri")]?.let { dao.addBookmark(BookmarkEntity(pdfId = it, page = o.getInt("page"))) }
                 }
             }
-            withContext(Dispatchers.Main) { stack.clear(); selection.clear(); toast("Restored $matched of ${pa.length()} PDFs") }
+            withContext(Dispatchers.Main) { stack.clear(); clearSel(); toast("Restored $matched of ${pa.length()} PDFs") }
         } catch (e: Exception) {
             withContext(Dispatchers.Main) { toast("That file isn't a valid Shelf backup") }
         }

@@ -57,6 +57,8 @@ private fun Root(vm: LibraryVm = viewModel()) {
     val pdfs by vm.pdfs.collectAsState()
     val recent = remember(pdfs) { pdfs.filter { it.lastOpened > 0 }.sortedByDescending { it.lastOpened }.take(100) }
     val saved = remember(pdfs) { sortNatural(pdfs.filter { it.favorite }) }
+    val libFolders by vm.folders.collectAsState()
+    val savedFolders = remember(libFolders) { libFolders.filter { it.favorite }.sortedBy { it.name.lowercase() } }
 
     // From Recent, Saved or Settings, Back goes to the Library before it leaves the app.
     BackHandler(enabled = vm.tab != 0) { vm.tab = 0 }
@@ -67,7 +69,7 @@ private fun Root(vm: LibraryVm = viewModel()) {
                 when (vm.tab) {
                     0 -> LibraryScreen(vm)
                     1 -> PdfListScreen(vm, "Recent", recent, "Nothing opened yet", "PDFs you read will show up here, ready to pick up where you left off.")
-                    2 -> PdfListScreen(vm, "Saved", saved, "No favourites yet", "Tap the star on any PDF to keep it close for exam week.")
+                    2 -> PdfListScreen(vm, "Saved", saved, "No favourites yet", "Tap the star on any PDF or folder to keep it close for exam week.", savedFolders)
                     else -> SettingsScreen(vm)
                 }
             }

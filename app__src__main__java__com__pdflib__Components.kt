@@ -117,7 +117,7 @@ enum class PdfMenuAction { Pin, Rename, Move, Remove, Delete }
 
 sealed interface PdfDlg {
     class Rename(val pdf: PdfEntity) : PdfDlg
-    class Move(val ids: List<Long>) : PdfDlg
+    class Move(val ids: List<Long>, val folderIds: List<Long> = emptyList()) : PdfDlg
     /** [title] is only used when a single PDF is being deleted. */
     class Delete(val ids: List<Long>, val title: String) : PdfDlg
 }
@@ -315,13 +315,18 @@ fun PdfRow(
 fun FolderRow(
     f: FolderEntity, subtitle: String, onClick: () -> Unit,
     onEdit: () -> Unit, onMove: () -> Unit, onDelete: () -> Unit,
-    onPin: () -> Unit = {}, modifier: Modifier = Modifier
+    onPin: () -> Unit = {}, modifier: Modifier = Modifier,
+    selecting: Boolean = false, selected: Boolean = false,
+    onFav: (() -> Unit)? = null, menu: Boolean = true
 ) {
     val pal = LocalPal.current
     val tone = FolderTones[f.color.mod(FolderTones.size)]
-    var menu by remember { mutableStateOf(false) }
+    var open by remember { mutableStateOf(false) }
     Row(
-        modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+        modifier.fillMaxWidth()
+            .background(if (selected) pal.accent.copy(alpha = 0.10f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(start = 16.dp, end = 2.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(Modifier.size(46.dp).clip(RoundedCornerShape(14.dp)).background(tone.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
@@ -335,14 +340,35 @@ fun FolderRow(
             }
             Text(subtitle, fontSize = 12.sp, color = pal.soft)
         }
-        Box {
-            IconButton(onClick = { menu = true }) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.soft) }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text(if (f.pinned) "Unpin" else "Pin to top") }, onClick = { menu = false; onPin() })
-                DropdownMenuItem(text = { Text("Rename / colour") }, onClick = { menu = false; onEdit() })
-                DropdownMenuItem(text = { Text("Move to…") }, onClick = { menu = false; onMove() })
-                DropdownMenuItem(text = { Text("Delete folder") }, onClick = { menu = false; onDelete() })
+        if (selecting) {
+            Box(
+                Modifier.padding(horizontal = 12.dp).size(24.dp).clip(CircleShape)
+                    .background(if (selected) pal.accent else Color.Transparent)
+                    .border(1.5.dp, if (selected) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                if (selected) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp))
             }
+        } else {
+            if (onFav != null) {
+                IconButton(onClick = onFav, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        if (f.favorite) Icons.Rounded.Star else Icons.Rounded.StarBorder, if (f.favorite) "Remove from Saved" else "Save folder",
+                        tint = if (f.favorite) pal.hi else pal.soft.copy(alpha = 0.6f)
+                    )
+                }
+            }
+            if (menu) {
+                Box {
+                    IconButton(onClick = { open = true }, modifier = Modifier.size(40.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.soft) }
+                    DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                        DropdownMenuItem(text = { Text(if (f.pinned) "Unpin" else "Pin to top") }, onClick = { open = false; onPin() })
+                        DropdownMenuItem(text = { Text("Rename / colour") }, onClick = { open = false; onEdit() })
+                        DropdownMenuItem(text = { Text("Move to…") }, onClick = { open = false; onMove() })
+                        DropdownMenuItem(text = { Text("Remove folder", color = pal.accent) }, onClick = { open = false; onDelete() })
+                    }
+                }
+            } else Spacer(Modifier.width(8.dp))
         }
     }
 }
@@ -623,12 +649,23 @@ fun PdfDialogHost(vm: LibraryVm) {
         is PdfDlg.Rename -> RenameDialog(d.pdf.title(), { vm.pdfDialog = null }) { n -> vm.renamePdf(d.pdf, n); vm.pdfDialog = null }
         is PdfDlg.Move -> {
             val stats = remember(allPdfs, folders) { FolderStats(allPdfs, folders) }
-            val cur = remember(d.ids, allPdfs) { val ids = d.ids.toHashSet(); allPdfs.filter { it.id in ids }.map { it.folderId }.toSet() }
-            val one = if (d.ids.size == 1) allPdfs.firstOrNull { it.id == d.ids[0] }?.title() else null
+            val exclude = remember(d.folderIds, folders) { d.folderIds.flatMap { descendants(it, folders) }.toSet() }
+            val cur = remember(d.ids, d.folderIds, allPdfs, folders) {
+                val pi = d.ids.toHashSet()
+                val fi = d.folderIds.toHashSet()
+                allPdfs.filter { it.id in pi }.map { it.folderId }.toSet() + folders.filter { it.id in fi }.map { it.parentId }.toSet()
+            }
+            val n = d.ids.size + d.folderIds.size
+            val one = when {
+                n != 1 -> null
+                d.folderIds.size == 1 -> folders.firstOrNull { it.id == d.folderIds[0] }?.name
+                else -> allPdfs.firstOrNull { it.id == d.ids[0] }?.title()
+            }
+            val noun = if (d.folderIds.isEmpty()) "PDFs" else if (d.ids.isEmpty()) "folders" else "items"
             FolderPicker(
-                folders, emptySet(), if (d.ids.size == 1) "Move to" else "Move ${d.ids.size} PDFs to",
-                { vm.movePdfs(d.ids, it); vm.selection.clear(); vm.pdfDialog = null }, { vm.pdfDialog = null },
-                subtitle = one, current = cur, stats = stats, onNewFolder = { n, c, par -> vm.createFolder(n, c, par) }
+                folders, exclude, if (n == 1) "Move to" else "Move $n $noun to",
+                { vm.moveItems(d.ids, d.folderIds, it); vm.clearSel(); vm.pdfDialog = null }, { vm.pdfDialog = null },
+                subtitle = one, current = cur, stats = stats, onNewFolder = { nm, c, par -> vm.createFolder(nm, c, par) }
             )
         }
         is PdfDlg.Delete -> AlertDialog(

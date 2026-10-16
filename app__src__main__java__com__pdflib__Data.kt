@@ -16,7 +16,11 @@ data class FolderEntity(
     /** Pinned folders always stay above the others (they can still be reordered among themselves). */
     @ColumnInfo(defaultValue = "0") val pinned: Boolean = false,
     /** Manual position inside its group (pinned / not pinned). 0 = never ordered by hand, falls back to A-Z. */
-    @ColumnInfo(defaultValue = "0") val sortIndex: Int = 0
+    @ColumnInfo(defaultValue = "0") val sortIndex: Int = 0,
+    /** Saved folders also show up in the Saved tab, like starred PDFs. */
+    @ColumnInfo(defaultValue = "0") val favorite: Boolean = false,
+    /** "Removed from Shelf": the folder and everything inside it stay hidden until restored from Settings. */
+    @ColumnInfo(defaultValue = "0") val removed: Boolean = false
 )
 
 @Entity(tableName = "pdfs", indices = [Index(value = ["uri"], unique = true), Index("folderId")])
@@ -72,6 +76,9 @@ interface LibDao {
     @Query("UPDATE folders SET parentId=:newParent WHERE parentId=:old") suspend fun reparentChildren(old: Long, newParent: Long?)
     @Query("UPDATE pdfs SET folderId=:newF WHERE folderId=:old") suspend fun reparentPdfs(old: Long, newF: Long?)
     @Query("DELETE FROM folders WHERE id=:id") suspend fun deleteFolder(id: Long)
+    @Query("UPDATE folders SET favorite=:fav WHERE id IN (:ids)") suspend fun setFolderFavorite(ids: List<Long>, fav: Boolean)
+    @Query("UPDATE folders SET removed=:r WHERE id IN (:ids)") suspend fun setFoldersRemoved(ids: List<Long>, r: Boolean)
+    @Query("UPDATE folders SET parentId=:parent, sortIndex=0 WHERE id IN (:ids)") suspend fun moveFolders(ids: List<Long>, parent: Long?)
 
     @Query("UPDATE pdfs SET folderId=:folder, sortIndex=0 WHERE id IN (:ids)") suspend fun movePdfs(ids: List<Long>, folder: Long?)
     @Query("UPDATE pdfs SET favorite=:fav WHERE id IN (:ids)") suspend fun setFavorite(ids: List<Long>, fav: Boolean)
@@ -99,7 +106,7 @@ interface LibDao {
     suspend fun restorePdf(id: Long, folder: Long?, fav: Boolean, page: Int, count: Int, label: String?, hidden: Boolean, pinned: Boolean, sortIndex: Int)
 }
 
-@Database(entities = [FolderEntity::class, PdfEntity::class, BookmarkEntity::class], version = 3, exportSchema = false)
+@Database(entities = [FolderEntity::class, PdfEntity::class, BookmarkEntity::class], version = 4, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): LibDao
 
@@ -107,7 +114,7 @@ abstract class AppDb : RoomDatabase() {
         @Volatile private var inst: AppDb? = null
         fun get(c: Context): AppDb = inst ?: synchronized(this) {
             inst ?: Room.databaseBuilder(c.applicationContext, AppDb::class.java, "library.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3) // never a destructive fallback: folders, stars and bookmarks must survive updates
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4) // never a destructive fallback: folders, stars and bookmarks must survive updates
                 .build().also { inst = it }
         }
     }
@@ -127,5 +134,12 @@ private val MIGRATION_2_3 = object : Migration(2, 3) {
         db.execSQL("ALTER TABLE folders ADD COLUMN sortIndex INTEGER NOT NULL DEFAULT 0")
         db.execSQL("ALTER TABLE pdfs ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
         db.execSQL("ALTER TABLE pdfs ADD COLUMN sortIndex INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+private val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE folders ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE folders ADD COLUMN removed INTEGER NOT NULL DEFAULT 0")
     }
 }

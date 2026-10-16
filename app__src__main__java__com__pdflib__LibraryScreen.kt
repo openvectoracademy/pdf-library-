@@ -44,7 +44,6 @@ private sealed interface Dlg {
     object New : Dlg
     class Edit(val f: FolderEntity) : Dlg
     class Delete(val f: FolderEntity) : Dlg
-    class MoveFolder(val f: FolderEntity) : Dlg
 }
 
 @Composable
@@ -89,7 +88,14 @@ fun LibraryScreen(vm: LibraryVm) {
             }
         } else null
     }
-    reorder.onLongPress = { k -> if (k is Long) vm.toggleSel(k) }
+    reorder.onLongPress = { k ->
+        if (k is Long) {
+            vm.toggleSel(k)
+        } else if (k is String && k.startsWith("f")) {
+            val fid = k.drop(1).toLongOrNull()
+            if (fid != null) vm.toggleFolderSel(fid)
+        }
+    }
     val shownSubs = reorder.arrange("f", subs) { "f${it.id}" }
     val shownDocs = reorder.arrange("p", docs) { it.id }
     LaunchedEffect(subs, docs) {
@@ -99,14 +105,14 @@ fun LibraryScreen(vm: LibraryVm) {
     val stats = remember(pdfs, folders) { FolderStats(pdfs, folders) }
     val resume = remember(pdfs) { pdfs.filter { it.lastOpened > 0 && !it.missing }.maxByOrNull { it.lastOpened } }
     val paths = remember(folders) { folderPaths(folders) }
-    val selecting = vm.selection.isNotEmpty()
+    val selecting = vm.selectedCount > 0
     var dlg by remember { mutableStateOf<Dlg?>(null) }
     val picker = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) vm.addSource(u) }
     val pickFiles = rememberLauncherForActivityResult(PickPdfs()) { l -> if (l.isNotEmpty()) vm.addFiles(l, currentId) }
     val onboarding = vm.loaded && vm.sources.isEmpty() && pdfs.isEmpty() && currentId == null
     val openSearch: () -> Unit = { vm.searching = true }
 
-    BackHandler(enabled = selecting || vm.stack.isNotEmpty()) { if (selecting) vm.selection.clear() else vm.up() }
+    BackHandler(enabled = selecting || vm.stack.isNotEmpty()) { if (selecting) vm.clearSel() else vm.up() }
     LaunchedEffect(currentId) { vm.libState.scrollToItem(0) }
     LaunchedEffect(folders) { if (currentId != null && folders.isNotEmpty() && byId[currentId] == null) vm.goToFolder(null) }
 
@@ -115,32 +121,46 @@ fun LibraryScreen(vm: LibraryVm) {
             // ---- top bar: logo + name + search, selection tools, or back + search inside a folder ----
             if (selecting) {
                 var more by remember { mutableStateOf(false) }
+                val selPdfs = vm.selection.toList()
+                val selFolders = vm.folderSelection.toList()
+                val total = selPdfs.size + selFolders.size
+                val allSaved = selPdfs.all { id -> pdfs.firstOrNull { it.id == id }?.favorite == true } &&
+                    selFolders.all { id -> byId[id]?.favorite == true }
+                val allPinned = selPdfs.all { id -> pdfs.firstOrNull { it.id == id }?.pinned == true } &&
+                    selFolders.all { id -> byId[id]?.pinned == true }
                 Row(Modifier.fillMaxWidth().height(60.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { vm.selection.clear() }) { Icon(Icons.Rounded.Close, "Cancel", tint = pal.ink) }
-                    Text("${vm.selection.size} selected", fontFamily = Serif, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = pal.ink, modifier = Modifier.weight(1f))
-                    IconButton(onClick = { vm.selection.clear(); vm.selection.addAll(docs.map { it.id }) }) { Icon(Icons.Rounded.SelectAll, "Select all", tint = pal.ink) }
+                    IconButton(onClick = { vm.clearSel() }) { Icon(Icons.Rounded.Close, "Cancel", tint = pal.ink) }
+                    Text("$total selected", fontFamily = Serif, fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = pal.ink, modifier = Modifier.weight(1f))
                     IconButton(onClick = {
-                        val allFav = vm.selection.all { id -> pdfs.firstOrNull { it.id == id }?.favorite == true }
-                        vm.setFavorite(vm.selection.toList(), !allFav); vm.selection.clear()
-                    }) { Icon(Icons.Rounded.Star, "Favorite", tint = pal.hi) }
-                    IconButton(onClick = { vm.pdfDialog = PdfDlg.Move(vm.selection.toList()) }) { Icon(Icons.Rounded.FolderOpen, "Move", tint = pal.accent) }
+                        vm.clearSel(); vm.folderSelection.addAll(subs.map { it.id }); vm.selection.addAll(docs.map { it.id })
+                    }) { Icon(Icons.Rounded.SelectAll, "Select all", tint = pal.ink) }
+                    IconButton(onClick = {
+                        vm.setFavorite(selPdfs, !allSaved); vm.setFoldersFavorite(selFolders, !allSaved); vm.clearSel()
+                    }) { Icon(if (allSaved) Icons.Rounded.StarBorder else Icons.Rounded.Star, if (allSaved) "Remove from Saved" else "Save", tint = pal.hi) }
+                    IconButton(onClick = { vm.pdfDialog = PdfDlg.Move(selPdfs, selFolders) }) { Icon(Icons.Rounded.FolderOpen, "Move", tint = pal.accent) }
                     Box {
                         IconButton(onClick = { more = true }) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.ink) }
                         DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
-                            if (vm.selection.size == 1) DropdownMenuItem(text = { Text("Rename") }, onClick = {
+                            if (total == 1) DropdownMenuItem(text = { Text(if (selFolders.isNotEmpty()) "Rename / colour" else "Rename") }, onClick = {
                                 more = false
-                                val one = pdfs.firstOrNull { it.id == vm.selection.first() }
-                                if (one != null) { vm.selection.clear(); vm.pdfDialog = PdfDlg.Rename(one) }
+                                if (selFolders.isNotEmpty()) {
+                                    val fo = byId[selFolders.first()]
+                                    vm.clearSel()
+                                    if (fo != null) dlg = Dlg.Edit(fo)
+                                } else {
+                                    val one = pdfs.firstOrNull { it.id == selPdfs.first() }
+                                    vm.clearSel()
+                                    if (one != null) vm.pdfDialog = PdfDlg.Rename(one)
+                                }
                             })
-                            val allPinned = vm.selection.all { id -> pdfs.firstOrNull { it.id == id }?.pinned == true }
                             DropdownMenuItem(text = { Text(if (allPinned) "Unpin" else "Pin to top") }, onClick = {
-                                more = false; vm.setPdfPinned(vm.selection.toList(), !allPinned); vm.selection.clear()
-                            })
-                            DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { more = false; vm.removeFromShelf(vm.selection.toList()) })
-                            DropdownMenuItem(text = { Text("Delete from phone", color = pal.accent) }, onClick = {
                                 more = false
-                                val ids = vm.selection.toList()
-                                vm.pdfDialog = PdfDlg.Delete(ids, pdfs.firstOrNull { it.id == ids.firstOrNull() }?.title() ?: "")
+                                vm.setPdfPinned(selPdfs, !allPinned); vm.setFoldersPinned(selFolders, !allPinned); vm.clearSel()
+                            })
+                            DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { more = false; vm.removeItems(selPdfs, selFolders) })
+                            if (selFolders.isEmpty()) DropdownMenuItem(text = { Text("Delete from phone", color = pal.accent) }, onClick = {
+                                more = false
+                                vm.pdfDialog = PdfDlg.Delete(selPdfs, pdfs.firstOrNull { it.id == selPdfs.firstOrNull() }?.title() ?: "")
                             })
                         }
                     }
@@ -209,10 +229,13 @@ fun LibraryScreen(vm: LibraryVm) {
                     if (subs.isNotEmpty()) {
                         item(key = "fl") { Overline("Folders", Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp)) }
                         items(shownSubs, key = { "f${it.id}" }) { f ->
-                            FolderRow(f, stats.subtitle(f.id), onClick = { vm.enter(f.id) },
-                                onEdit = { dlg = Dlg.Edit(f) }, onMove = { dlg = Dlg.MoveFolder(f) }, onDelete = { dlg = Dlg.Delete(f) },
+                            FolderRow(f, stats.subtitle(f.id),
+                                onClick = { if (selecting) vm.toggleFolderSel(f.id) else vm.enter(f.id) },
+                                onEdit = { dlg = Dlg.Edit(f) }, onMove = { vm.pdfDialog = PdfDlg.Move(emptyList(), listOf(f.id)) }, onDelete = { dlg = Dlg.Delete(f) },
                                 onPin = { vm.setFolderPinned(f, !f.pinned) },
-                                modifier = reorderItem(reorder, "f${f.id}", pal.surface))
+                                modifier = reorderItem(reorder, "f${f.id}", pal.surface),
+                                selecting = selecting, selected = f.id in vm.folderSelection,
+                                onFav = { vm.setFoldersFavorite(listOf(f.id), !f.favorite) })
                         }
                     }
 
@@ -261,17 +284,23 @@ fun LibraryScreen(vm: LibraryVm) {
     when (val d = dlg) {
         is Dlg.New -> FolderDialog("New folder", "", stats.subCount(currentId ?: -1L) % FolderTones.size, "Create", { dlg = null }) { n, c -> vm.createFolder(n, c, currentId); dlg = null }
         is Dlg.Edit -> FolderDialog("Edit folder", d.f.name, d.f.color, "Save", { dlg = null }) { n, c -> vm.updateFolder(d.f.id, n, c); dlg = null }
-        is Dlg.Delete -> AlertDialog(
-            onDismissRequest = { dlg = null }, containerColor = pal.surface,
-            title = { Text("Delete “${d.f.name}”?", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
-            text = { Text("Its PDFs and subfolders move up one level. Files on your phone are never touched.") },
-            confirmButton = { TextButton(onClick = { vm.deleteFolder(d.f); dlg = null }) { Text("Delete", color = pal.accent) } },
-            dismissButton = { TextButton(onClick = { dlg = null }) { Text("Cancel") } }
-        )
-        is Dlg.MoveFolder -> FolderPicker(
-            folders, descendants(d.f.id, folders), "Move “${d.f.name}” to", { vm.moveFolder(d.f.id, it); dlg = null }, { dlg = null },
-            current = setOf(d.f.parentId), stats = stats, onNewFolder = { n, c, par -> vm.createFolder(n, c, par) }
-        )
+        is Dlg.Delete -> {
+            val n = stats.pdfCount(d.f.id)
+            val pl = if (n == 1) "" else "s"
+            AlertDialog(
+                onDismissRequest = { dlg = null }, containerColor = pal.surface,
+                title = { Text("Remove “${d.f.name}”?", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
+                text = {
+                    Text(
+                        (if (n > 0) "The folder and its $n PDF$pl leave your Library. Restore them any time in Settings › Removed folders."
+                        else "The folder leaves your Library. Restore it any time in Settings › Removed folders.") +
+                            " Files on your phone are never touched."
+                    )
+                },
+                confirmButton = { TextButton(onClick = { vm.removeItems(emptyList(), listOf(d.f.id)); dlg = null }) { Text("Remove", color = pal.accent) } },
+                dismissButton = { TextButton(onClick = { dlg = null }) { Text("Cancel") } }
+            )
+        }
         null -> {}
     }
 }
