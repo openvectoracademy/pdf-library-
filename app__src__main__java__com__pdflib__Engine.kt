@@ -19,18 +19,19 @@ import java.io.File
 
 /** Walks a granted folder tree using raw DocumentsContract queries (much faster than DocumentFile). */
 object Scanner {
-    class Found(val uri: String, val name: String, val size: Long, val modified: Long)
+    /** [rel] = the folder names between the linked folder and the file, e.g. ["Chapter 1", "Notes"]. */
+    class Found(val uri: String, val name: String, val size: Long, val modified: Long, val rel: List<String> = emptyList())
 
     fun scan(ctx: Context, tree: Uri, onCount: (Int) -> Unit): List<Found> {
         val out = ArrayList<Found>()
-        val stack = ArrayList<String>()
-        stack.add(DocumentsContract.getTreeDocumentId(tree))
+        val stack = ArrayList<Pair<String, List<String>>>()
+        stack.add(DocumentsContract.getTreeDocumentId(tree) to emptyList<String>())
         val cols = arrayOf(
             Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME, Document.COLUMN_MIME_TYPE,
             Document.COLUMN_SIZE, Document.COLUMN_LAST_MODIFIED
         )
         while (stack.isNotEmpty()) {
-            val parent = stack.removeAt(stack.lastIndex)
+            val (parent, rel) = stack.removeAt(stack.lastIndex)
             val kids = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent)
             ctx.contentResolver.query(kids, cols, null, null, null)?.use { c ->
                 while (c.moveToNext()) {
@@ -38,9 +39,9 @@ object Scanner {
                     val name = c.getString(1) ?: continue
                     val mime = c.getString(2) ?: ""
                     if (mime == Document.MIME_TYPE_DIR) {
-                        if (!name.startsWith(".")) stack.add(id)
+                        if (!name.startsWith(".")) stack.add(id to (rel + name))
                     } else if (mime == "application/pdf" || name.endsWith(".pdf", true)) {
-                        out.add(Found(DocumentsContract.buildDocumentUriUsingTree(tree, id).toString(), name, c.getLong(3), c.getLong(4)))
+                        out.add(Found(DocumentsContract.buildDocumentUriUsingTree(tree, id).toString(), name, c.getLong(3), c.getLong(4), rel))
                         if (out.size % 25 == 0) onCount(out.size)
                     }
                 }

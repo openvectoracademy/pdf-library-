@@ -20,7 +20,21 @@ data class FolderEntity(
     /** Saved folders also show up in the Saved tab, like starred PDFs. */
     @ColumnInfo(defaultValue = "0") val favorite: Boolean = false,
     /** "Removed from Shelf": the folder and everything inside it stay hidden until restored from Settings. */
-    @ColumnInfo(defaultValue = "0") val removed: Boolean = false
+    @ColumnInfo(defaultValue = "0") val removed: Boolean = false,
+    /** Set on folders Shelf created while mirroring a linked phone folder: "<link key>|<path on the phone>". Lets rescans find them again. */
+    val link: String? = null
+)
+
+/** A phone folder that feeds a Shelf folder (target null = the Library itself). */
+@Entity(tableName = "links", indices = [Index(value = ["uri"], unique = true)])
+data class LinkEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val uri: String,
+    val target: Long? = null,
+    /** LINK_MIRROR: phone subfolders become Shelf folders. LINK_FLAT: every PDF goes straight into the target. */
+    val mode: Int = 0,
+    val name: String,
+    val created: Long = System.currentTimeMillis()
 )
 
 @Entity(tableName = "pdfs", indices = [Index(value = ["uri"], unique = true), Index("folderId")])
@@ -65,6 +79,10 @@ interface LibDao {
 
     @Query("SELECT * FROM pdfs") suspend fun pdfsOnce(): List<PdfEntity>
     @Query("SELECT * FROM folders") suspend fun foldersOnce(): List<FolderEntity>
+    @Query("SELECT * FROM links ORDER BY created") fun links(): Flow<List<LinkEntity>>
+    @Query("SELECT * FROM links ORDER BY created") suspend fun linksOnce(): List<LinkEntity>
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertLink(l: LinkEntity): Long
+    @Query("DELETE FROM links WHERE id=:id") suspend fun deleteLink(id: Long)
     @Query("SELECT * FROM bookmarks") suspend fun bookmarksOnce(): List<BookmarkEntity>
 
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertPdfs(list: List<PdfEntity>)
@@ -107,7 +125,7 @@ interface LibDao {
     suspend fun restorePdf(id: Long, folder: Long?, fav: Boolean, page: Int, count: Int, label: String?, hidden: Boolean, pinned: Boolean, sortIndex: Int)
 }
 
-@Database(entities = [FolderEntity::class, PdfEntity::class, BookmarkEntity::class], version = 4, exportSchema = false)
+@Database(entities = [FolderEntity::class, PdfEntity::class, BookmarkEntity::class, LinkEntity::class], version = 5, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): LibDao
 
@@ -115,7 +133,7 @@ abstract class AppDb : RoomDatabase() {
         @Volatile private var inst: AppDb? = null
         fun get(c: Context): AppDb = inst ?: synchronized(this) {
             inst ?: Room.databaseBuilder(c.applicationContext, AppDb::class.java, "library.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4) // never a destructive fallback: folders, stars and bookmarks must survive updates
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5) // never a destructive fallback: folders, stars and bookmarks must survive updates
                 .build().also { inst = it }
         }
     }
@@ -142,5 +160,13 @@ private val MIGRATION_3_4 = object : Migration(3, 4) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE folders ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
         db.execSQL("ALTER TABLE folders ADD COLUMN removed INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+private val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS `links` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uri` TEXT NOT NULL, `target` INTEGER, `mode` INTEGER NOT NULL, `name` TEXT NOT NULL, `created` INTEGER NOT NULL)")
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_links_uri` ON `links` (`uri`)")
+        db.execSQL("ALTER TABLE folders ADD COLUMN link TEXT")
     }
 }

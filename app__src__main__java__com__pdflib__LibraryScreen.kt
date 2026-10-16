@@ -1,6 +1,7 @@
 package com.pdflib
 
 import android.content.Context
+import android.net.Uri
 import androidx.compose.foundation.shape.CircleShape
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -107,9 +108,15 @@ fun LibraryScreen(vm: LibraryVm) {
     val paths = remember(folders) { folderPaths(folders) }
     val selecting = vm.selectedCount > 0
     var dlg by remember { mutableStateOf<Dlg?>(null) }
-    val picker = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) vm.addSource(u) }
+    val links by vm.links.collectAsState()
+    val linkCount = remember(links, currentId) { links.count { it.target == currentId } }
+    var pendingTree by remember { mutableStateOf<Uri?>(null) }
+    var showLinks by remember { mutableStateOf(false) }
+    val linkPicker = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) pendingTree = u }
+    val fixPicker = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) vm.regrant(u) }
+    val placeName = current?.name ?: "Library"
     val pickFiles = rememberLauncherForActivityResult(PickPdfs()) { l -> if (l.isNotEmpty()) vm.addFiles(l, currentId) }
-    val onboarding = vm.loaded && vm.sources.isEmpty() && pdfs.isEmpty() && currentId == null
+    val onboarding = vm.loaded && vm.sources.isEmpty() && links.isEmpty() && pdfs.isEmpty() && currentId == null
     val openSearch: () -> Unit = { vm.searching = true }
 
     BackHandler(enabled = selecting || vm.stack.isNotEmpty()) { if (selecting) vm.clearSel() else vm.up() }
@@ -195,6 +202,18 @@ fun LibraryScreen(vm: LibraryVm) {
                             Text(current.name, fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 30.sp, lineHeight = 34.sp, color = pal.ink)
                             Text(stats.subtitle(current.id), fontSize = 13.sp, color = pal.soft)
                         }
+                        if (!onboarding && linkCount > 0) {
+                            Spacer(Modifier.height(10.dp))
+                            Row(
+                                Modifier.clip(RoundedCornerShape(50)).background(pal.chip).clickable { showLinks = true }.padding(start = 12.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Rounded.Link, null, tint = pal.accent, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("$linkCount linked phone folder" + (if (linkCount == 1) "" else "s"), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = pal.ink)
+                                Icon(Icons.Rounded.ChevronRight, null, tint = pal.soft, modifier = Modifier.size(16.dp))
+                            }
+                        }
                     }
                 }
 
@@ -211,11 +230,11 @@ fun LibraryScreen(vm: LibraryVm) {
                         Column(Modifier.padding(horizontal = 24.dp, vertical = 40.dp)) {
                             Text("Your PDFs,\nin order.", fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 40.sp, lineHeight = 44.sp, color = pal.ink)
                             Spacer(Modifier.height(16.dp))
-                            Text("Choose the folders where your study PDFs live. Shelf reads them right where they are. Nothing is copied, moved or uploaded.", fontSize = 15.sp, lineHeight = 22.sp, color = pal.soft)
+                            Text("Link a folder from your phone. Keep its folders as they are, or bring in just the files. Shelf reads them right where they are. Nothing is copied or uploaded.", fontSize = 15.sp, lineHeight = 22.sp, color = pal.soft)
                             Spacer(Modifier.height(28.dp))
-                            Button(onClick = { picker.launch(null) }, shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White),
+                            Button(onClick = { linkPicker.launch(null) }, shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White),
                                 contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp)) {
-                                Text("Choose folders", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                                Text("Link a phone folder", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                             }
                         }
                     }
@@ -255,7 +274,7 @@ fun LibraryScreen(vm: LibraryVm) {
                     }
 
                     if (current != null && subs.isEmpty() && docs.isEmpty()) item(key = "empty") {
-                        Hint("Nothing in here yet", "Tap + at the bottom right to add PDFs from your phone here, or to create a subfolder.")
+                        Hint("Nothing in here yet", "Tap + at the bottom right to add PDFs, link a phone folder, or create a subfolder.")
                     }
                 }
             }
@@ -276,10 +295,22 @@ fun LibraryScreen(vm: LibraryVm) {
                         leadingIcon = { Icon(Icons.Rounded.NoteAdd, null, tint = pal.accent) },
                         text = { Text("Add PDFs from phone") }, onClick = { add = false; pickFiles.launch(arrayOf("application/pdf")) }
                     )
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Rounded.Link, null, tint = pal.accent) },
+                        text = { Text("Link a phone folder") }, onClick = { add = false; linkPicker.launch(null) }
+                    )
                 }
             }
         }
     }
+
+    pendingTree?.let { t -> LinkModeSheet(vm, t, currentId, placeName) { pendingTree = null } }
+    if (showLinks) LinksSheet(
+        vm, currentId, placeName,
+        onFix = { fixPicker.launch(null) },
+        onAdd = { showLinks = false; linkPicker.launch(null) },
+        onClose = { showLinks = false }
+    )
 
     when (val d = dlg) {
         is Dlg.New -> FolderDialog("New folder", "", stats.subCount(currentId ?: -1L) % FolderTones.size, "Create", { dlg = null }) { n, c -> vm.createFolder(n, c, currentId); dlg = null }

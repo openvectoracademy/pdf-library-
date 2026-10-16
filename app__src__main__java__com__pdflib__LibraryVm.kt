@@ -80,6 +80,8 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val hidden = allPdfs.map { l -> l.filter { it.hidden } }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val bookmarks = dao.bookmarks().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    /** Phone folders linked into Shelf folders. */
+    val links = dao.links().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // navigation + UI state
     var tab by mutableIntStateOf(0)
@@ -157,6 +159,46 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         refreshSources(); rescan()
     }
 
+    /** Links a phone folder into a Shelf folder ([target] null = the Library). [mode] is LINK_MIRROR or LINK_FLAT. */
+    fun linkFolder(uri: Uri, target: Long?, mode: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            grant(uri)
+            val dup = dao.linksOnce().firstOrNull { it.uri == uri.toString() }
+            if (dup == null) dao.insertLink(LinkEntity(uri = uri.toString(), target = target, mode = mode, name = treeFolderName(uri)))
+            withContext(Dispatchers.Main) {
+                refreshSources(); rescan()
+                toast(if (dup == null) "Linked “${treeFolderName(uri)}”" else "That phone folder is already linked. Access refreshed.")
+            }
+        }
+    }
+
+    /** Picks an already linked folder again to bring back lost access or to allow renaming and deleting. */
+    fun regrant(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (dao.linksOnce().none { it.uri == uri.toString() }) {
+                withContext(Dispatchers.Main) { toast("That is a different folder. Choose the same linked folder again.") }
+                return@launch
+            }
+            grant(uri)
+            withContext(Dispatchers.Main) { refreshSources(); rescan(); toast("Access updated") }
+        }
+    }
+
+    /** Stops reading a linked phone folder. Its PDFs stay in Shelf (marked not found) with their folders, stars and bookmarks. */
+    fun unlink(link: LinkEntity) {
+        viewModelScope.launch {
+            dao.deleteLink(link.id)
+            removeSource(Uri.parse(link.uri))
+        }
+    }
+
+    /** Older installs had plain "sources": give each one a link that drops its PDFs into the Library, as before. */
+    private suspend fun ensureLinks(roots: List<Uri>): List<LinkEntity> {
+        val have = dao.linksOnce().mapTo(HashSet<String>()) { it.uri }
+        for (r in roots) if (r.toString() !in have) dao.insertLink(LinkEntity(uri = r.toString(), target = null, mode = LINK_FLAT, name = treeFolderName(r)))
+        return dao.linksOnce()
+    }
+
     /** Stops watching a folder. Its PDFs keep their folders, stars and bookmarks; they are just flagged as not found. */
     fun removeSource(uri: Uri) {
         try {
@@ -181,12 +223,35 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         val roots = sources
         val prefixes = roots.map { it.toString() + "/document/" }
         viewModelScope.launch(Dispatchers.IO) {
+            val linkList = ensureLinks(roots)
+            val folderRows = dao.foldersOnce()
+            val folderIds = folderRows.mapTo(HashSet<Long>()) { it.id }
+            val keyToId = HashMap<String, Long>()
+            folderRows.forEach { f -> val k = f.link; if (k != null) keyToId[k] = f.id }
+            suspend fun ensureFolder(key: String, name: String, parent: Long?): Long {
+                keyToId[key]?.let { return it }
+                val id = dao.insertFolder(FolderEntity(name = name, parentId = parent, color = keyToId.size % FolderTones.size, link = key))
+                keyToId[key] = id
+                return id
+            }
+            // Where a NEW pdf goes. Existing ones stay wherever you put them.
+            suspend fun placeFor(link: LinkEntity?, rel: List<String>): Long? {
+                if (link == null) return null
+                val target = link.target?.takeIf { it in folderIds }
+                if (link.mode == LINK_FLAT) return target
+                val k = linkKey(link.uri)
+                var parent: Long? = ensureFolder("$k|", link.name, target)
+                var path = ""
+                for (seg in rel) { path = if (path.isEmpty()) seg else "$path/$seg"; parent = ensureFolder("$k|$path", seg, parent) }
+                return parent
+            }
             var base = 0
             for (root in roots) {
                 try {
                     val found = Scanner.scan(ctx, root) { scanFound = base + it }
                     base += found.size
                     val prefix = root.toString() + "/document/"
+                    val link = linkList.firstOrNull { it.uri == root.toString() }
                     val rows = dao.pdfsOnce()
                     val known = rows.mapTo(HashSet<String>()) { it.uri }
                     val seen = found.mapTo(HashSet<String>()) { it.uri }
@@ -212,7 +277,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                             used.add(old.id)
                             dao.relink(old.id, f.uri, f.name, f.size, f.modified)
                         } else {
-                            fresh.add(PdfEntity(uri = f.uri, name = f.name, size = f.size, modified = f.modified))
+                            fresh.add(PdfEntity(uri = f.uri, name = f.name, size = f.size, modified = f.modified, folderId = placeFor(link, f.rel)))
                         }
                     }
                     fresh.chunked(200).forEach { dao.insertPdfs(it) }
@@ -525,7 +590,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
             val uriOf = p.associate { it.id to it.uri }
             val root = JSONObject().put("app", "shelf").put("version", 1)
             root.put("folders", JSONArray().also { a ->
-                f.forEach { a.put(JSONObject().put("id", it.id).put("name", it.name).put("parentId", it.parentId ?: JSONObject.NULL).put("color", it.color).put("pinned", it.pinned).put("sortIndex", it.sortIndex).put("favorite", it.favorite).put("removed", it.removed)) }
+                f.forEach { a.put(JSONObject().put("id", it.id).put("name", it.name).put("parentId", it.parentId ?: JSONObject.NULL).put("color", it.color).put("pinned", it.pinned).put("sortIndex", it.sortIndex).put("favorite", it.favorite).put("removed", it.removed).put("link", it.link ?: JSONObject.NULL)) }
             })
             root.put("pdfs", JSONArray().also { a ->
                 p.filter { it.folderId != null || it.favorite || it.lastPage > 0 || it.label != null || it.hidden || it.pinned || it.sortIndex > 0 }.forEach {
@@ -563,7 +628,8 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                         id = o.getLong("id"), name = o.getString("name"),
                         parentId = if (o.isNull("parentId")) null else o.getLong("parentId"), color = o.optInt("color"),
                         pinned = o.optBoolean("pinned", false), sortIndex = o.optInt("sortIndex", 0),
-                        favorite = o.optBoolean("favorite", false), removed = o.optBoolean("removed", false)
+                        favorite = o.optBoolean("favorite", false), removed = o.optBoolean("removed", false),
+                        link = if (o.isNull("link")) null else o.optString("link", "").ifEmpty { null }
                     ))
                 }
                 val idByUri = HashMap<String, Long>()

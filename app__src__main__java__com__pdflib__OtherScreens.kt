@@ -288,6 +288,48 @@ private fun SourceRow(label: String, canEdit: Boolean, onFix: () -> Unit, onRemo
     }
 }
 
+/** One linked phone folder in Settings: where it feeds, how many PDFs, and whether Shelf still has access. */
+@Composable
+private fun LinkSettingRow(
+    link: LinkEntity, where: String, count: Int, hasAccess: Boolean, canEdit: Boolean,
+    onOpen: () -> Unit, onFix: () -> Unit, onUnlink: () -> Unit
+) {
+    val pal = LocalPal.current
+    val ok = if (pal.dark) Color(0xFF8FBF6A) else Color(0xFF4C7A2E)
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(start = 16.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconTile(Icons.Rounded.Link, if (hasAccess) pal.accent else pal.soft)
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Text(link.name, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = pal.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                "in $where · $count PDF" + (if (count == 1) "" else "s"),
+                fontSize = 12.sp, color = pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                StatusChip(
+                    if (link.mode == LINK_MIRROR) "Keeps folders" else "Just the files", pal.soft,
+                    if (link.mode == LINK_MIRROR) Icons.Rounded.AccountTree else Icons.Rounded.Description
+                )
+                when {
+                    !hasAccess -> StatusChip("Access lost", pal.accent, Icons.Rounded.Lock)
+                    canEdit -> StatusChip("Can rename and delete", ok, Icons.Rounded.CheckCircle)
+                    else -> StatusChip("Read-only", pal.accent, Icons.Rounded.Lock)
+                }
+            }
+            if (!hasAccess || !canEdit) {
+                TextButton(onClick = onFix, contentPadding = PaddingValues(0.dp)) {
+                    Text(if (!hasAccess) "Reconnect folder" else "Allow editing", color = pal.accent, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                }
+            }
+        }
+        IconButton(onClick = onUnlink) { Icon(Icons.Rounded.LinkOff, "Unlink", tint = pal.soft) }
+    }
+}
+
 // ───────────────────────── Theme picker ─────────────────────────
 
 /** A tiny drawing of the app in one palette, so the choice is visible before it is made. */
@@ -365,8 +407,10 @@ fun SettingsScreen(vm: LibraryVm) {
     val removedFolders by vm.removedFolders.collectAsState()
     var showRemoved by remember { mutableStateOf(false) }
     var showRemovedFolders by remember { mutableStateOf(false) }
-    var confirmSource by remember { mutableStateOf<Uri?>(null) }
-    val add = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) vm.addSource(u) }
+    val links by vm.links.collectAsState()
+    var confirmLink by remember { mutableStateOf<LinkEntity?>(null) }
+    val fixPicker = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) vm.regrant(u) }
+    val folderPath = remember(folders) { folderPaths(folders) }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { u -> if (u != null) vm.exportBackup(u) }
     var pendingRestore by remember { mutableStateOf<Uri?>(null) }
     val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { u -> if (u != null) pendingRestore = u }
@@ -397,22 +441,30 @@ fun SettingsScreen(vm: LibraryVm) {
         }
 
         item {
-            SettingsSection("PDF folders", footer = "Subfolders are included automatically.") {
-                if (vm.sources.isEmpty()) {
+            SettingsSection("Linked folders", footer = "Link more phone folders with the + button in the Library. Tap one to open the folder it feeds.") {
+                if (links.isEmpty()) {
                     Text(
-                        "No folders yet. Add one so Shelf can find your PDFs.",
+                        "No phone folders linked yet. Open the Library, tap +, then Link a phone folder.",
                         fontSize = 13.sp, lineHeight = 19.sp, color = pal.soft, modifier = Modifier.padding(16.dp)
                     )
                     RowDivider()
                 }
-                vm.sources.forEach { u ->
-                    key(u.toString()) {
-                        SourceRow(treeLabel(u), u.toString() in vm.writable, onFix = { add.launch(null) }, onRemove = { confirmSource = u })
+                links.forEach { l ->
+                    key(l.id) {
+                        val prefix = l.uri + "/document/"
+                        val where = when {
+                            l.target == null -> "Library"
+                            else -> folderPath[l.target] ?: "a removed folder"
+                        }
+                        LinkSettingRow(
+                            l, where, pdfs.count { it.uri.startsWith(prefix) },
+                            hasAccess = vm.sources.any { it.toString() == l.uri }, canEdit = l.uri in vm.writable,
+                            onOpen = { vm.goToFolder(l.target) },
+                            onFix = { fixPicker.launch(null) }, onUnlink = { confirmLink = l }
+                        )
                         RowDivider()
                     }
                 }
-                SettingRow(Icons.Rounded.Add, "Add a folder", "Pick any folder on your phone") { add.launch(null) }
-                RowDivider()
                 SettingRow(
                     Icons.Rounded.Refresh, if (vm.scanning) "Scanning… ${vm.scanFound} found" else "Rescan now", "Also runs every time you open Shelf",
                     tint = pal.ink,
@@ -504,15 +556,15 @@ fun SettingsScreen(vm: LibraryVm) {
     }
     }
 
-    confirmSource?.let { u ->
+    confirmLink?.let { l ->
         AlertDialog(
-            onDismissRequest = { confirmSource = null }, containerColor = pal.surface,
-            title = { Text("Stop using “${treeLabel(u)}”?", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
+            onDismissRequest = { confirmLink = null }, containerColor = pal.surface,
+            title = { Text("Unlink “${l.name}”?", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
             text = {
-                Text("Shelf will stop looking in this folder. Your PDFs stay on your phone, and their folders, stars and bookmarks stay in Shelf. They show “File not found” until you add the folder again.")
+                Text("Shelf stops reading this phone folder. Its PDFs stay in Shelf with their folders, stars and bookmarks, and show “File not found” until you link the folder again. Files on your phone are never touched.")
             },
-            confirmButton = { TextButton(onClick = { vm.removeSource(u); confirmSource = null }) { Text("Stop using", color = pal.accent) } },
-            dismissButton = { TextButton(onClick = { confirmSource = null }) { Text("Cancel") } }
+            confirmButton = { TextButton(onClick = { vm.unlink(l); confirmLink = null }) { Text("Unlink", color = pal.accent) } },
+            dismissButton = { TextButton(onClick = { confirmLink = null }) { Text("Cancel") } }
         )
     }
 
