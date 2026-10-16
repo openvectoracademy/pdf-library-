@@ -411,16 +411,6 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- pdfs ----------
-    /** Moves PDFs and offers Undo, which puts every PDF back in the folder it came from. */
-    fun movePdfs(ids: List<Long>, target: Long?) {
-        val before = allPdfs.value.filter { it.id in ids }.groupBy({ it.folderId }, { it.id })
-        viewModelScope.launch { ids.chunked(500).forEach { dao.movePdfs(it, target) } }
-        if (before.keys.all { it == target }) return
-        val msg = (if (ids.size == 1) "Moved" else "Moved ${ids.size} PDFs") + " to ${folderName(target)}"
-        undo = UndoNote(msg) {
-            viewModelScope.launch { before.forEach { (old, group) -> group.chunked(500).forEach { dao.movePdfs(it, old) } } }
-        }
-    }
     fun setFavorite(ids: List<Long>, fav: Boolean) = viewModelScope.launch { ids.chunked(500).forEach { dao.setFavorite(it, fav) } }
     /** Opens the right dialog (or acts straight away) for the ⋮ menu on a PDF row. */
     fun rowAction(p: PdfEntity, a: PdfMenuAction) {
