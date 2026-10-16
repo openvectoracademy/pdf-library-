@@ -4,6 +4,9 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// Every GitHub build gets a higher number, so each APK installs over the previous one as a normal update.
+val buildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+
 android {
     namespace = "com.pdflib"
     compileSdk = 34
@@ -12,16 +15,25 @@ android {
         applicationId = "com.pdflib.shelf"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = buildNumber
+        versionName = "1.0.$buildNumber"
+    }
+
+    // One permanent key. Every build is signed with it, so Android treats new APKs as updates and keeps your data.
+    signingConfigs {
+        create("shelf") {
+            storeFile = file("shelf-release.jks")
+            storePassword = "shelf-release-key"
+            keyAlias = "shelf"
+            keyPassword = "shelf-release-key"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
             isDebuggable = false
-            // Signed with the debug key so the APK installs directly, but runs as a fast release build.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("shelf")
         }
     }
     compileOptions {
