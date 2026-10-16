@@ -413,8 +413,12 @@ fun FolderPicker(
     val here = at?.takeIf { it in byId && it !in exclude }
     val trail = remember(here, byId) {
         val out = ArrayList<FolderEntity>()
-        var x = here?.let { byId[it] }
-        while (x != null && out.size < 50) { out.add(0, x); x = x.parentId?.let { byId[it] } }
+        var cur: Long? = here
+        while (cur != null && out.size < 50) {
+            val f = byId[cur] ?: break
+            out.add(0, f)
+            cur = f.parentId
+        }
         out
     }
     val tokens = remember(query) { query.lowercase().split(' ').filter { it.isNotBlank() } }
@@ -424,8 +428,12 @@ fun FolderPicker(
 
     fun depth(id: Long?): Int {
         var d = 0
-        var x = id?.let { byId[it] }
-        while (x != null && d < 50) { d++; x = x.parentId?.let { byId[it] } }
+        var cur: Long? = id
+        while (cur != null && d < 50) {
+            val f = byId[cur] ?: break
+            d++
+            cur = f.parentId
+        }
         return d
     }
     fun go(id: Long?) { forward = depth(id) >= depth(here); at = id; query = "" }
