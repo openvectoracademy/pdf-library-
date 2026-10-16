@@ -12,6 +12,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -222,20 +223,56 @@ fun SettingsScreen(vm: LibraryVm) {
     }
 
     if (showRemoved) ModalBottomSheet(onDismissRequest = { showRemoved = false }, containerColor = pal.surface) {
+        val picked = remember { mutableStateListOf<Long>() }
+        // Rows that disappear (restored, or changed elsewhere) are dropped from the selection.
+        LaunchedEffect(removed) { picked.retainAll { id -> removed.any { it.id == id } } }
+        val allPicked = removed.isNotEmpty() && picked.size == removed.size
         Column(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
-            Row(Modifier.padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Removed from Shelf", Modifier.weight(1f), fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = pal.ink)
-                if (removed.isNotEmpty()) TextButton(onClick = { vm.restoreToShelf(removed.map { it.id }) }) { Text("Restore all", color = pal.accent) }
-            }
+            Text(
+                "Removed from Shelf", fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = pal.ink,
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp)
+            )
             if (removed.isEmpty()) {
                 Text("Nothing here. PDFs you remove from Shelf wait here until you restore them. The files themselves are never touched.",
                     fontSize = 14.sp, lineHeight = 20.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+            } else {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = {
+                        if (allPicked) picked.clear() else { picked.clear(); picked.addAll(removed.map { it.id }) }
+                    }) { Text(if (allPicked) "Clear selection" else "Select all", color = pal.accent) }
+                    Spacer(Modifier.weight(1f))
+                    if (picked.isNotEmpty()) {
+                        Button(
+                            onClick = { vm.restoreToShelf(picked.toList()); picked.clear() },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White)
+                        ) { Text("Restore (${picked.size})", fontWeight = FontWeight.SemiBold) }
+                    } else {
+                        TextButton(onClick = { vm.restoreToShelf(removed.map { it.id }) }) { Text("Restore all", color = pal.accent) }
+                    }
+                }
+                if (picked.isEmpty()) Text("Tap PDFs to pick several and restore them together.", fontSize = 12.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp))
             }
             LazyColumn(Modifier.heightIn(max = 420.dp)) {
                 items(removed, key = { it.id }) { p ->
-                    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val on = p.id in picked
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .background(if (on) pal.accent.copy(alpha = 0.10f) else Color.Transparent)
+                            .clickable { if (on) picked.remove(p.id) else picked.add(p.id) }
+                            .padding(start = 20.dp, end = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier.size(24.dp).clip(CircleShape)
+                                .background(if (on) pal.accent else Color.Transparent)
+                                .border(1.5.dp, if (on) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) { if (on) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp)) }
+                        Spacer(Modifier.width(14.dp))
                         Text(p.title(), Modifier.weight(1f).padding(vertical = 12.dp), fontSize = 15.sp, color = pal.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        TextButton(onClick = { vm.restoreToShelf(listOf(p.id)) }) { Text("Restore", color = pal.accent) }
+                        if (picked.isEmpty()) TextButton(onClick = { vm.restoreToShelf(listOf(p.id)) }) { Text("Restore", color = pal.accent) }
+                        else Spacer(Modifier.width(8.dp))
                     }
                 }
             }
