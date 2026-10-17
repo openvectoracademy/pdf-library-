@@ -239,11 +239,13 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
             val folderRows = dao.foldersOnce()
             val folderIds = folderRows.mapTo(HashSet<Long>()) { it.id }
             val keyToId = HashMap<String, Long>()
-            folderRows.forEach { f -> val k = f.link; if (k != null) keyToId[k] = f.id }
+            val idToKey = HashMap<Long, String>()
+            folderRows.forEach { f -> val k = f.link; if (k != null) { keyToId[k] = f.id; idToKey[f.id] = k } }
             suspend fun ensureFolder(key: String, name: String, parent: Long?): Long {
                 keyToId[key]?.let { return it }
                 val id = dao.insertFolder(FolderEntity(name = name, parentId = parent, color = keyToId.size % FolderTones.size, link = key))
                 keyToId[key] = id
+                idToKey[id] = key
                 return id
             }
             // Where a NEW pdf goes. Existing ones stay wherever you put them.
@@ -284,6 +286,9 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                     // 1) same content fingerprint (survives any rename), 2) same name and size, 3) same size and date.
                     val candFp = candidates.filter { val x = it.fp; x != null && x != "-" }
                     var fpBudget = 200
+                    // PDFs that changed folders on the phone: (pdf id, Shelf folder it was in, its folder on the phone now)
+                    val moves = ArrayList<Triple<Long, Long, String>>()
+                    val lk: String? = if (link != null && link.mode == LINK_MIRROR) linkKey(link.uri) else null
                     for (f in found) {
                         if (f.uri in known) continue
                         val newFp: String? = if (candFp.isNotEmpty() && fpBudget > 0) { fpBudget--; Fingerprint.of(ctx, Uri.parse(f.uri)) } else null
@@ -295,11 +300,45 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                             used.add(old.id)
                             dao.relink(old.id, f.uri, f.name, f.size, f.modified)
                             if (old.fp != newFp) dao.setFp(old.id, newFp)
+                            val oldFolder = old.folderId
+                            val oldKey = if (oldFolder != null) idToKey[oldFolder] else null
+                            if (lk != null && oldFolder != null && oldKey != null && oldKey.startsWith("$lk|")) {
+                                val newRel = f.rel.joinToString("/")
+                                if (oldKey.substringAfter('|', "") != newRel) moves.add(Triple(old.id, oldFolder, newRel))
+                            }
                         } else {
                             fresh.add(PdfEntity(uri = f.uri, name = f.name, size = f.size, modified = f.modified, folderId = placeFor(link, f.rel)))
                         }
                     }
                     fresh.chunked(200).forEach { dao.insertPdfs(it) }
+
+                    // Follow the phone. A folder renamed or moved outside Shelf is renamed or moved in Shelf too,
+                    // and a PDF that changed folders on the phone changes folders here, instead of leaving stale copies behind.
+                    if (link != null && lk != null && moves.isNotEmpty()) {
+                        val dirsNow = HashSet<String>()
+                        for (f in found) {
+                            var path = ""
+                            for (seg in f.rel) { path = if (path.isEmpty()) seg else "$path/$seg"; dirsNow.add(path) }
+                        }
+                        val byOld = moves.groupBy { it.second }
+                        val order = byOld.entries.sortedBy { e -> e.value.first().third.count { c -> c == '/' } }
+                        for (entry in order) {
+                            val oldFolder = entry.key
+                            val oldKey = idToKey[oldFolder] ?: continue
+                            if (oldKey.substringAfter('|', "") in dirsNow) continue
+                            val newRel = entry.value.groupBy { it.third }.maxByOrNull { it.value.size }?.key ?: continue
+                            if (newRel.isEmpty() || keyToId["$lk|$newRel"] != null) continue
+                            val parentRel = newRel.substringBeforeLast('/', "")
+                            val parentId = placeFor(link, if (parentRel.isEmpty()) emptyList() else parentRel.split('/'))
+                            val newKey = "$lk|$newRel"
+                            dao.renameMirror(oldFolder, newRel.substringAfterLast('/'), newKey, parentId)
+                            keyToId.remove(oldKey); keyToId[newKey] = oldFolder; idToKey[oldFolder] = newKey
+                        }
+                        for (m in moves) {
+                            val target = placeFor(link, if (m.third.isEmpty()) emptyList() else m.third.split('/'))
+                            if (target != null && target != m.second) dao.movePdfs(listOf(m.first), target)
+                        }
+                    }
 
                     // Gone from the phone: keep the row, flag it.
                     inRoot.filter { it.uri !in seen && it.id !in used && !it.missing }.map { it.id }

@@ -124,6 +124,7 @@ interface LibDao {
     @Query("UPDATE pdfs SET uri=:uri, trashed=:t, origDir=:orig WHERE id=:id") suspend fun setTrash(id: Long, uri: String, t: Long, orig: String?)
     @Query("UPDATE pdfs SET uri=:uri, trashed=0, origDir=NULL, missing=0 WHERE id=:id") suspend fun untrash(id: Long, uri: String)
     @Query("UPDATE folders SET link=:link WHERE id=:id") suspend fun setFolderLink(id: Long, link: String?)
+    @Query("UPDATE folders SET name=:name, link=:link, parentId=:parent WHERE id=:id") suspend fun renameMirror(id: Long, name: String, link: String, parent: Long?)
 
     @Insert suspend fun addBookmark(b: BookmarkEntity)
     @Query("DELETE FROM bookmarks WHERE id=:id") suspend fun deleteBookmark(id: Long)
