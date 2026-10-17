@@ -73,14 +73,16 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     /** What the app shows: everything except PDFs the user removed from Shelf. */
     val pdfs = combine(allPdfs, allFolders) { p, f ->
         val gone = hiddenFolderIds(f)
-        p.filter { pdf -> val fid = pdf.folderId; !pdf.hidden && (fid == null || fid !in gone) }
+        p.filter { pdf -> val fid = pdf.folderId; !pdf.hidden && pdf.trashed == 0L && (fid == null || fid !in gone) }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     /** Removed folders waiting in Settings, with how many PDFs come back with each. */
     val removedFolders = combine(allFolders, allPdfs) { f, p ->
-        val stats = FolderStats(p.filter { !it.hidden }, f)
+        val stats = FolderStats(p.filter { !it.hidden && it.trashed == 0L }, f)
         removedRoots(f).map { RemovedFolder(it, stats.pdfCount(it.id), stats.subCount(it.id)) }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-    val hidden = allPdfs.map { l -> l.filter { it.hidden } }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val hidden = allPdfs.map { l -> l.filter { it.hidden && it.trashed == 0L } }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    /** PDFs deleted from the phone but still recoverable: newest first. */
+    val trash = allPdfs.map { l -> l.filter { it.trashed > 0L }.sortedByDescending { it.trashed } }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val bookmarks = dao.bookmarks().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     /** Phone folders linked into Shelf folders. */
     val links = dao.links().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -256,7 +258,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                     base += found.size
                     val prefix = root.toString() + "/document/"
                     val link = linkList.firstOrNull { it.uri == root.toString() }
-                    val rows = dao.pdfsOnce()
+                    val rows = dao.pdfsOnce().filter { it.trashed == 0L }
                     val known = rows.mapTo(HashSet<String>()) { it.uri }
                     val seen = found.mapTo(HashSet<String>()) { it.uri }
                     val inRoot = rows.filter { it.uri.startsWith(prefix) }
@@ -374,10 +376,46 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- folders ----------
-    fun createFolder(name: String, color: Int, parent: Long?) = viewModelScope.launch {
-        dao.insertFolder(FolderEntity(name = name, parentId = parent, color = color))
+    /** A new folder. Inside a phone folder it is created on the phone too; anywhere else it only exists in Shelf. */
+    fun createFolder(name: String, color: Int, parent: Long?) = viewModelScope.launch(Dispatchers.IO) {
+        val pd = phoneDirOf(parent)
+        if (pd == null) {
+            dao.insertFolder(FolderEntity(name = name, parentId = parent, color = color))
+            return@launch
+        }
+        if (pd.link.uri !in writable) { say(READ_ONLY); return@launch }
+        val clean = PhoneOps.cleanName(name)
+        if (clean.isEmpty()) return@launch
+        val dirId = PhoneOps.resolveDir(ctx, pd.tree, pd.rel)
+        if (dirId == null) { say("Couldn't find this folder on your phone."); return@launch }
+        if (PhoneOps.hasName(ctx, pd.tree, dirId, clean)) { say("A folder named “$clean” already exists on your phone here."); return@launch }
+        if (PhoneOps.createDir(ctx, pd.tree, dirId, clean) == null) { say("Couldn't create the folder on your phone."); return@launch }
+        val rel = if (pd.rel.isEmpty()) clean else pd.rel + "/" + clean
+        dao.insertFolder(FolderEntity(name = clean, parentId = parent, color = color, link = linkKey(pd.link.uri) + "|" + rel))
     }
-    fun updateFolder(id: Long, name: String, color: Int) = viewModelScope.launch { dao.updateFolder(id, name, color) }
+
+    /** Renames a folder. A phone folder is renamed on the phone too, and its PDFs keep every star, bookmark and page. */
+    fun updateFolder(id: Long, name: String, color: Int) = viewModelScope.launch(Dispatchers.IO) {
+        val f = allFolders.value.firstOrNull { it.id == id } ?: return@launch
+        val clean = PhoneOps.cleanName(name)
+        val pd = phoneDirOf(id)
+        if (pd == null || pd.rel.isEmpty() || clean.isEmpty() || clean == f.name) {
+            dao.updateFolder(id, name, color)
+            return@launch
+        }
+        if (pd.link.uri !in writable) { say(READ_ONLY); return@launch }
+        val oldId = PhoneOps.resolveDir(ctx, pd.tree, pd.rel)
+        if (oldId == null) { say("Couldn't find this folder on your phone."); return@launch }
+        val inDir = PhoneOps.parentId(oldId, PhoneOps.rootId(pd.tree))
+        if (PhoneOps.hasName(ctx, pd.tree, inDir, clean, oldId)) { say("A folder named “$clean” already exists on your phone here."); return@launch }
+        val newId = PhoneOps.rename(ctx, pd.tree, oldId, clean)
+        if (newId == null) { say("Couldn't rename the folder on your phone."); return@launch }
+        val parentRel = pd.rel.substringBeforeLast('/', "")
+        rebase(pd, pd.rel, if (parentRel.isEmpty()) clean else "$parentRel/$clean", oldId, newId)
+        dao.updateFolder(id, clean, color)
+        withContext(Dispatchers.Main) { rescan() }
+    }
+
     private fun folderName(id: Long?): String = id?.let { t -> folders.value.firstOrNull { it.id == t }?.name } ?: "Library"
 
     fun moveFolder(id: Long, target: Long?) = moveItems(emptyList(), listOf(id), target)
@@ -386,6 +424,10 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     /** Moves PDFs and folders together. One Undo puts every item back where it came from. */
     fun moveItems(pdfIds: List<Long>, folderIds: List<Long>, target: Long?) {
         if (pdfIds.isEmpty() && folderIds.isEmpty()) return
+        if (target != null && allFolders.value.firstOrNull { it.id == target }?.link != null) {
+            moveOnPhone(pdfIds, folderIds, target)
+            return
+        }
         val beforeP = allPdfs.value.filter { it.id in pdfIds }.groupBy({ it.folderId }, { it.id })
         val beforeF = allFolders.value.filter { it.id in folderIds }.groupBy({ it.parentId }, { it.id })
         viewModelScope.launch {
@@ -554,6 +596,134 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------- real changes on the phone ----------
+    private class PhoneDir(val link: LinkEntity, val tree: Uri, val rel: String)
+
+    private val READ_ONLY = "This phone folder is read-only. In Settings, tap the folder and choose it again to allow changes."
+
+    private suspend fun say(m: String) = withContext(Dispatchers.Main) { toast(m) }
+
+    /** The phone folder behind a Shelf folder, or null when it is a Shelf-only folder. */
+    private suspend fun phoneDirOf(folderId: Long?): PhoneDir? {
+        val f = folderId?.let { id -> allFolders.value.firstOrNull { it.id == id } } ?: return null
+        val key = f.link ?: return null
+        val k = key.substringBefore('|')
+        val rel = key.substringAfter('|', "")
+        val link = dao.linksOnce().firstOrNull { linkKey(it.uri) == k } ?: return null
+        return PhoneDir(link, Uri.parse(link.uri), rel)
+    }
+
+    /** Live check for the folder name box: a message when the phone already has a folder with that name. */
+    suspend fun folderNameProblem(parent: Long?, typed: String, selfId: Long?): String? = withContext(Dispatchers.IO) {
+        val clean = PhoneOps.cleanName(typed)
+        if (clean.isEmpty()) return@withContext null
+        val pd = phoneDirOf(parent) ?: return@withContext null
+        if (pd.link.uri !in writable) return@withContext null
+        val dirId = PhoneOps.resolveDir(ctx, pd.tree, pd.rel) ?: return@withContext null
+        var selfDir: String? = null
+        if (selfId != null) {
+            val sp = phoneDirOf(selfId)
+            if (sp != null && sp.rel.isNotEmpty()) selfDir = PhoneOps.resolveDir(ctx, sp.tree, sp.rel)
+        }
+        if (PhoneOps.hasName(ctx, pd.tree, dirId, clean, selfDir)) "A folder named “$clean” already exists on your phone here. Choose another name." else null
+    }
+
+    /** After a phone folder was renamed or moved: update its Shelf folders' link keys and its PDFs' addresses. */
+    private suspend fun rebase(pd: PhoneDir, oldRel: String, newRel: String, oldDirId: String, newDirId: String) {
+        val k = linkKey(pd.link.uri)
+        val oldKey = "$k|$oldRel"
+        for (f in dao.foldersOnce()) {
+            val key = f.link ?: continue
+            if (key == oldKey || key.startsWith("$oldKey/")) dao.setFolderLink(f.id, "$k|$newRel" + key.removePrefix(oldKey))
+        }
+        val treePrefix = pd.tree.toString() + "/document/"
+        for (p in dao.pdfsOnce()) {
+            if (!p.uri.startsWith(treePrefix)) continue
+            val id = PhoneOps.idOf(p.uri)
+            if (id.startsWith("$oldDirId/")) {
+                dao.relink(p.id, PhoneOps.docUri(pd.tree, newDirId + id.removePrefix(oldDirId)).toString(), p.name, p.size, p.modified)
+            }
+        }
+    }
+
+    /** Moves PDFs and folders into a phone folder: the real files and folders move on the phone too. */
+    private fun moveOnPhone(pdfIds: List<Long>, folderIds: List<Long>, target: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val pd = phoneDirOf(target) ?: return@launch
+            if (pd.link.uri !in writable) { say(READ_ONLY); return@launch }
+            val destId = PhoneOps.resolveDir(ctx, pd.tree, pd.rel)
+            if (destId == null) { say("Couldn't find “${folderName(target)}” on your phone."); return@launch }
+            val taken = PhoneOps.kids(ctx, pd.tree, destId).mapTo(HashSet<String>()) { it.name.lowercase() }
+            var moved = 0; var clash = 0; var failed = 0
+            for (p in allPdfs.value.filter { it.id in pdfIds }) {
+                if (p.missing || !PhoneOps.isTreeDoc(p.uri)) { failed++; continue }
+                val srcTree = PhoneOps.treeOf(p.uri)
+                val from = PhoneOps.parentId(PhoneOps.idOf(p.uri), PhoneOps.rootId(srcTree))
+                if (srcTree == pd.tree && from == destId) { dao.movePdfs(listOf(p.id), target); moved++; continue }
+                if (p.name.lowercase() in taken) { clash++; continue }
+                val newUri = PhoneOps.transfer(ctx, p.uri, pd.tree, destId, p.name, move = true)
+                if (newUri == null) { failed++; continue }
+                dao.relink(p.id, newUri, p.name, p.size, p.modified)
+                dao.movePdfs(listOf(p.id), target)
+                taken.add(p.name.lowercase()); moved++
+            }
+            for (f in allFolders.value.filter { it.id in folderIds }) {
+                val fpd = phoneDirOf(f.id)
+                if (fpd == null) { dao.moveFolders(listOf(f.id), target); moved++; continue }
+                if (fpd.rel.isEmpty() || fpd.tree != pd.tree || pd.rel == fpd.rel || pd.rel.startsWith(fpd.rel + "/")) { failed++; continue }
+                val oldId = PhoneOps.resolveDir(ctx, fpd.tree, fpd.rel)
+                if (oldId == null) { failed++; continue }
+                val fromParent = PhoneOps.parentId(oldId, PhoneOps.rootId(fpd.tree))
+                if (fromParent == destId) { dao.moveFolders(listOf(f.id), target); moved++; continue }
+                val dirName = fpd.rel.substringAfterLast('/')
+                if (dirName.lowercase() in taken) { clash++; continue }
+                val newId = PhoneOps.move(ctx, fpd.tree, oldId, fromParent, destId)
+                if (newId == null) { failed++; continue }
+                rebase(fpd, fpd.rel, if (pd.rel.isEmpty()) dirName else pd.rel + "/" + dirName, oldId, newId)
+                dao.moveFolders(listOf(f.id), target)
+                taken.add(dirName.lowercase()); moved++
+            }
+            val parts = ArrayList<String>()
+            if (moved > 0) parts.add("Moved $moved to “${folderName(target)}” on your phone")
+            if (clash > 0) parts.add("$clash skipped because the same name already exists there")
+            if (failed > 0) parts.add("$failed couldn't be moved")
+            withContext(Dispatchers.Main) {
+                clearSel()
+                if (parts.isNotEmpty()) toast(parts.joinToString(". "))
+                rescan()
+            }
+        }
+    }
+
+    /** Copies PDFs into a phone folder (real copies on the phone). Files whose name already exists there are skipped. */
+    fun copyPdfs(ids: List<Long>, target: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val pd = phoneDirOf(target)
+            if (pd == null) { say("Pick a phone folder to copy into."); return@launch }
+            if (pd.link.uri !in writable) { say(READ_ONLY); return@launch }
+            val destId = PhoneOps.resolveDir(ctx, pd.tree, pd.rel)
+            if (destId == null) { say("Couldn't find “${folderName(target)}” on your phone."); return@launch }
+            val taken = PhoneOps.kids(ctx, pd.tree, destId).mapTo(HashSet<String>()) { it.name.lowercase() }
+            var copied = 0; var clash = 0; var failed = 0
+            for (p in allPdfs.value.filter { it.id in ids }) {
+                if (p.missing || !PhoneOps.isTreeDoc(p.uri)) { failed++; continue }
+                if (p.name.lowercase() in taken) { clash++; continue }
+                val newUri = PhoneOps.transfer(ctx, p.uri, pd.tree, destId, p.name, move = false)
+                if (newUri == null) { failed++; continue }
+                dao.insertPdfs(listOf(PdfEntity(uri = newUri, name = p.name, size = p.size, modified = System.currentTimeMillis(), folderId = target)))
+                taken.add(p.name.lowercase()); copied++
+            }
+            val parts = ArrayList<String>()
+            if (copied > 0) parts.add("Copied $copied to “${folderName(target)}” on your phone")
+            if (clash > 0) parts.add("$clash skipped because the same name already exists there")
+            if (failed > 0) parts.add("$failed couldn't be copied")
+            withContext(Dispatchers.Main) {
+                clearSel()
+                if (parts.isNotEmpty()) toast(parts.joinToString(". "))
+            }
+        }
+    }
+
     // ---------- pdfs ----------
     fun setFavorite(ids: List<Long>, fav: Boolean) = viewModelScope.launch { ids.chunked(500).forEach { dao.setFavorite(it, fav) } }
     /** Opens the right dialog (or acts straight away) for the ⋮ menu on a PDF row. */
@@ -562,6 +732,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
             PdfMenuAction.Pin -> setPdfPinned(listOf(p.id), !p.pinned)
             PdfMenuAction.Rename -> pdfDialog = PdfDlg.Rename(p)
             PdfMenuAction.Move -> pdfDialog = PdfDlg.Move(listOf(p.id))
+            PdfMenuAction.Copy -> pdfDialog = PdfDlg.Copy(listOf(p.id))
             PdfMenuAction.Remove -> pdfDialog = PdfDlg.RemoveItems(listOf(p.id), emptyList())
             PdfMenuAction.Delete -> pdfDialog = PdfDlg.Delete(listOf(p.id), p.title())
         }
@@ -659,26 +830,97 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         undo = null
     }
 
-    /** Permanently deletes the real files. Needs edit access to their folder. */
-    fun deleteFromPhone(ids: List<Long>) {
-        val targets = allPdfs.value.filter { it.id in ids }
-        selection.clear()
+    /**
+     * "Delete from phone": the file moves into a hidden Trash folder next to it on the phone, so a slip is never final.
+     * Restore (or Undo) puts it back; Delete forever in Settings › Trash removes it for good. Needs edit access.
+     */
+    fun trashPdfs(ids: List<Long>) {
+        val targets = allPdfs.value.filter { it.id in ids && it.trashed == 0L }
+        clearSel()
         viewModelScope.launch(Dispatchers.IO) {
             val done = ArrayList<Long>()
             var failed = 0
             for (p in targets) {
-                val gone = if (p.missing) true else try {
-                    DocumentsContract.deleteDocument(ctx.contentResolver, Uri.parse(p.uri))
-                } catch (e: Exception) { false }
-                if (gone) done.add(p.id) else failed++
+                if (p.missing) { dao.deleteByIds(listOf(p.id)); continue }
+                if (!PhoneOps.isTreeDoc(p.uri) || !canWrite(p)) { failed++; continue }
+                val tree = PhoneOps.treeOf(p.uri)
+                val root = PhoneOps.rootId(tree)
+                val srcId = PhoneOps.idOf(p.uri)
+                val from = PhoneOps.parentId(srcId, root)
+                val bin = PhoneOps.ensureDir(ctx, tree, root, PhoneOps.TRASH)
+                val slot = if (bin != null) PhoneOps.ensureDir(ctx, tree, bin, p.id.toString()) else null
+                val newId = if (slot != null) PhoneOps.move(ctx, tree, srcId, from, slot) else null
+                if (newId == null) { failed++; continue }
+                dao.setTrash(p.id, PhoneOps.docUri(tree, newId).toString(), System.currentTimeMillis(), from)
+                done.add(p.id)
+            }
+            withContext(Dispatchers.Main) {
+                if (failed > 0) {
+                    toast("Couldn't move $failed PDF" + (if (failed == 1) "" else "s") + " to the Trash. Open Settings and tap the folder to give Shelf edit access.")
+                }
+                if (done.isNotEmpty()) {
+                    undo = UndoNote(if (done.size == 1) "Moved to Trash" else "${done.size} PDFs moved to Trash") { restoreFromTrash(done.toList()) }
+                }
+            }
+        }
+    }
+
+    /** Puts trashed PDFs back where they were. A file whose name is already taken there is left in the Trash. */
+    fun restoreFromTrash(ids: List<Long>) {
+        val targets = allPdfs.value.filter { it.id in ids && it.trashed > 0L }
+        viewModelScope.launch(Dispatchers.IO) {
+            var ok = 0; var clash = 0; var failed = 0
+            for (p in targets) {
+                if (!PhoneOps.isTreeDoc(p.uri)) { failed++; continue }
+                val tree = PhoneOps.treeOf(p.uri)
+                val root = PhoneOps.rootId(tree)
+                val srcId = PhoneOps.idOf(p.uri)
+                val slot = PhoneOps.parentId(srcId, root)
+                var dest = p.origDir ?: root
+                if (PhoneOps.hasName(ctx, tree, dest, p.name)) { clash++; continue }
+                var newId = PhoneOps.move(ctx, tree, srcId, slot, dest)
+                if (newId == null && dest != root) {
+                    dest = root
+                    if (PhoneOps.hasName(ctx, tree, dest, p.name)) { clash++; continue }
+                    newId = PhoneOps.move(ctx, tree, srcId, slot, dest)
+                }
+                if (newId == null) { failed++; continue }
+                dao.untrash(p.id, PhoneOps.docUri(tree, newId).toString())
+                PhoneOps.delete(ctx, PhoneOps.docUri(tree, slot).toString())
+                ok++
+            }
+            withContext(Dispatchers.Main) {
+                undo = null
+                val parts = ArrayList<String>()
+                if (ok > 0) parts.add(if (ok == 1) "Restored" else "Restored $ok PDFs")
+                if (clash > 0) parts.add("$clash not restored: a file with the same name is already in that folder")
+                if (failed > 0) parts.add("$failed couldn't be restored")
+                if (parts.isNotEmpty()) toast(parts.joinToString(". "))
+            }
+        }
+    }
+
+    /** Deletes trashed PDFs for good. This cannot be undone. */
+    fun deleteForever(ids: List<Long>) {
+        val targets = allPdfs.value.filter { it.id in ids && it.trashed > 0L }
+        viewModelScope.launch(Dispatchers.IO) {
+            val done = ArrayList<Long>()
+            var failed = 0
+            for (p in targets) {
+                val gone = PhoneOps.delete(ctx, p.uri) || !PhoneOps.exists(ctx, p.uri)
+                if (!gone) { failed++; continue }
+                if (PhoneOps.isTreeDoc(p.uri)) {
+                    val tree = PhoneOps.treeOf(p.uri)
+                    PhoneOps.delete(ctx, PhoneOps.docUri(tree, PhoneOps.parentId(PhoneOps.idOf(p.uri), PhoneOps.rootId(tree))).toString())
+                }
+                done.add(p.id)
             }
             done.chunked(400).forEach { dao.deleteByIds(it) }
             withContext(Dispatchers.Main) {
                 when {
-                    failed == 0 && done.size == 1 -> toast("Deleted from your phone")
-                    failed == 0 -> toast("${done.size} PDFs deleted from your phone")
-                    else -> toast("Couldn't delete $failed PDF" + (if (failed == 1) "" else "s") +
-                        ". Open Settings and tap the folder to give Shelf edit access.")
+                    failed == 0 && done.size == 1 -> toast("Deleted forever")
+                    failed == 0 -> toast("${done.size} PDFs deleted forever")
+                    else -> toast("Couldn't delete $failed PDF" + (if (failed == 1) "" else "s") + ". Open Settings and tap the folder to give Shelf edit access.")
                 }
             }
         }
@@ -693,7 +935,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     // ---------- backup (organisation only, never the PDFs) ----------
     fun exportBackup(uri: Uri) = viewModelScope.launch(Dispatchers.IO) {
         try {
-            val f = dao.foldersOnce(); val p = dao.pdfsOnce(); val b = dao.bookmarksOnce()
+            val f = dao.foldersOnce(); val p = dao.pdfsOnce().filter { it.trashed == 0L }; val b = dao.bookmarksOnce()
             val uriOf = p.associate { it.id to it.uri }
             val root = JSONObject().put("app", "shelf").put("version", 1)
             root.put("folders", JSONArray().also { a ->

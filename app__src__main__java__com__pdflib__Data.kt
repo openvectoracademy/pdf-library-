@@ -58,7 +58,11 @@ data class PdfEntity(
     @ColumnInfo(defaultValue = "0") val pinned: Boolean = false,
     @ColumnInfo(defaultValue = "0") val sortIndex: Int = 0,
     /** A fingerprint of the file's content ("-" = couldn't be read). Survives renames, so a renamed file is always recognised. */
-    val fp: String? = null
+    val fp: String? = null,
+    /** When the file was moved to Shelf's Trash (0 = not in the trash). The file waits in a hidden folder on the phone. */
+    @ColumnInfo(defaultValue = "0") val trashed: Long = 0,
+    /** Where the file lived before it went to the Trash (a document id), so Restore can put it back. */
+    val origDir: String? = null
 )
 
 @Entity(
@@ -117,6 +121,9 @@ interface LibDao {
     suspend fun relink(id: Long, uri: String, name: String, size: Long, modified: Long)
     @Query("DELETE FROM pdfs WHERE id IN (:ids)") suspend fun deleteByIds(ids: List<Long>)
     @Query("UPDATE pdfs SET fp=:fp WHERE id=:id") suspend fun setFp(id: Long, fp: String?)
+    @Query("UPDATE pdfs SET uri=:uri, trashed=:t, origDir=:orig WHERE id=:id") suspend fun setTrash(id: Long, uri: String, t: Long, orig: String?)
+    @Query("UPDATE pdfs SET uri=:uri, trashed=0, origDir=NULL, missing=0 WHERE id=:id") suspend fun untrash(id: Long, uri: String)
+    @Query("UPDATE folders SET link=:link WHERE id=:id") suspend fun setFolderLink(id: Long, link: String?)
 
     @Insert suspend fun addBookmark(b: BookmarkEntity)
     @Query("DELETE FROM bookmarks WHERE id=:id") suspend fun deleteBookmark(id: Long)
@@ -128,7 +135,7 @@ interface LibDao {
     suspend fun restorePdf(id: Long, folder: Long?, fav: Boolean, page: Int, count: Int, label: String?, hidden: Boolean, pinned: Boolean, sortIndex: Int)
 }
 
-@Database(entities = [FolderEntity::class, PdfEntity::class, BookmarkEntity::class, LinkEntity::class], version = 6, exportSchema = false)
+@Database(entities = [FolderEntity::class, PdfEntity::class, BookmarkEntity::class, LinkEntity::class], version = 7, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): LibDao
 
@@ -136,7 +143,7 @@ abstract class AppDb : RoomDatabase() {
         @Volatile private var inst: AppDb? = null
         fun get(c: Context): AppDb = inst ?: synchronized(this) {
             inst ?: Room.databaseBuilder(c.applicationContext, AppDb::class.java, "library.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6) // never a destructive fallback: folders, stars and bookmarks must survive updates
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7) // never a destructive fallback: folders, stars and bookmarks must survive updates
                 .build().also { inst = it }
         }
     }
@@ -177,5 +184,12 @@ private val MIGRATION_4_5 = object : Migration(4, 5) {
 private val MIGRATION_5_6 = object : Migration(5, 6) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE pdfs ADD COLUMN fp TEXT")
+    }
+}
+
+private val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE pdfs ADD COLUMN trashed INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE pdfs ADD COLUMN origDir TEXT")
     }
 }

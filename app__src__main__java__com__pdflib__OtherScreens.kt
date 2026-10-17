@@ -407,6 +407,8 @@ fun SettingsScreen(vm: LibraryVm) {
     val removedFolders by vm.removedFolders.collectAsState()
     var showRemoved by remember { mutableStateOf(false) }
     var showRemovedFolders by remember { mutableStateOf(false) }
+    val trashList by vm.trash.collectAsState()
+    var showTrash by remember { mutableStateOf(false) }
     val links by vm.links.collectAsState()
     var confirmLink by remember { mutableStateOf<LinkEntity?>(null) }
     val fixPicker = rememberLauncherForActivityResult(PickTree()) { u -> if (u != null) vm.regrant(u) }
@@ -510,6 +512,24 @@ fun SettingsScreen(vm: LibraryVm) {
                         }
                     }
                 ) { showRemoved = true }
+                RowDivider()
+                SettingRow(
+                    Icons.Rounded.Delete, "Trash",
+                    if (trashList.isEmpty()) "Empty" else "Deleted PDFs: restore them or delete forever",
+                    tint = pal.ink,
+                    trailing = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (trashList.isNotEmpty()) {
+                                Text(
+                                    trashList.size.toString(), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = pal.accent,
+                                    modifier = Modifier.clip(RoundedCornerShape(50)).background(pal.accent.copy(alpha = 0.14f)).padding(horizontal = 9.dp, vertical = 3.dp)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            Icon(Icons.Rounded.ChevronRight, null, tint = pal.soft)
+                        }
+                    }
+                ) { showTrash = true }
             }
         }
 
@@ -590,11 +610,11 @@ fun SettingsScreen(vm: LibraryVm) {
             val one = picked.size == 1
             AlertDialog(
                 onDismissRequest = { confirmDelete = false }, containerColor = pal.surface,
-                title = { Text(if (one) "Delete this PDF from your phone?" else "Delete ${picked.size} PDFs from your phone?", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
+                title = { Text(if (one) "Move this PDF to Trash?" else "Move ${picked.size} PDFs to Trash?", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
                 text = {
-                    Text("This permanently deletes the file" + (if (one) "" else "s") + " from your phone and can't be undone. Bookmarks and reading progress are deleted too.")
+                    Text("Nothing is erased yet: the file" + (if (one) " moves" else "s move") + " to a hidden Trash folder on your phone. Restore " + (if (one) "it" else "them") + ", or delete " + (if (one) "it" else "them") + " forever, in Settings › Trash.")
                 },
-                confirmButton = { TextButton(onClick = { vm.deleteFromPhone(picked.toList()); picked.clear(); confirmDelete = false }) { Text("Delete forever", color = pal.accent) } },
+                confirmButton = { TextButton(onClick = { vm.trashPdfs(picked.toList()); picked.clear(); confirmDelete = false }) { Text("Move to Trash", color = pal.accent) } },
                 dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
             )
         }
@@ -613,7 +633,7 @@ fun SettingsScreen(vm: LibraryVm) {
                     }) { Text(if (allPicked) "Clear" else "Select all", color = pal.accent) }
                     Spacer(Modifier.weight(1f))
                     if (picked.isNotEmpty()) {
-                        TextButton(onClick = { confirmDelete = true }) { Text("Delete (${picked.size})", color = pal.accent) }
+                        TextButton(onClick = { confirmDelete = true }) { Text("Trash (${picked.size})", color = pal.accent) }
                         Spacer(Modifier.width(4.dp))
                         Button(
                             onClick = { vm.restoreToShelf(picked.toList()); picked.clear() },
@@ -624,7 +644,7 @@ fun SettingsScreen(vm: LibraryVm) {
                         TextButton(onClick = { vm.restoreToShelf(removed.map { it.id }) }) { Text("Restore all", color = pal.accent) }
                     }
                 }
-                if (picked.isEmpty()) Text("Tap PDFs to pick several, then restore or delete them. Delete removes the files from your phone.", fontSize = 12.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp))
+                if (picked.isEmpty()) Text("Tap PDFs to pick several, then restore them or move them to the Trash.", fontSize = 12.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp))
             }
             LazyColumn(Modifier.heightIn(max = 420.dp)) {
                 items(removed, key = { it.id }) { p ->
@@ -743,6 +763,87 @@ fun SettingsScreen(vm: LibraryVm) {
                             Text(sub, fontSize = 12.sp, color = pal.soft)
                         }
                         if (picked.isEmpty()) TextButton(onClick = { vm.restoreFolders(listOf(r.folder.id)) }) { Text("Restore", color = pal.accent) }
+                        else Spacer(Modifier.width(8.dp))
+                    }
+                }
+            }
+        }
+    }
+
+    if (showTrash) ModalBottomSheet(onDismissRequest = { showTrash = false }, containerColor = pal.surface) {
+        val picked = remember { mutableStateListOf<Long>() }
+        LaunchedEffect(trashList) { picked.retainAll { id -> trashList.any { it.id == id } } }
+        val allPicked = trashList.isNotEmpty() && picked.size == trashList.size
+        var confirmDelete by remember { mutableStateOf(false) }
+        if (confirmDelete && picked.isNotEmpty()) {
+            val one = picked.size == 1
+            AlertDialog(
+                onDismissRequest = { confirmDelete = false }, containerColor = pal.surface,
+                title = { Text(if (one) "Delete this PDF forever?" else "Delete ${picked.size} PDFs forever?", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
+                text = {
+                    Text("This permanently deletes the file" + (if (one) "" else "s") + " from your phone and can't be undone. Bookmarks and reading progress are deleted too.")
+                },
+                confirmButton = { TextButton(onClick = { vm.deleteForever(picked.toList()); picked.clear(); confirmDelete = false }) { Text("Delete forever", color = pal.accent) } },
+                dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
+            )
+        }
+        Column(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
+            Text(
+                "Trash", fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = pal.ink,
+                modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 4.dp)
+            )
+            if (trashList.isEmpty()) {
+                Text(
+                    "Nothing here. A PDF you move to the Trash waits here, in a hidden folder on your phone, until you restore it or delete it forever.",
+                    fontSize = 14.sp, lineHeight = 20.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                )
+            } else {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = {
+                        if (allPicked) picked.clear() else { picked.clear(); picked.addAll(trashList.map { it.id }) }
+                    }) { Text(if (allPicked) "Clear" else "Select all", color = pal.accent) }
+                    Spacer(Modifier.weight(1f))
+                    if (picked.isNotEmpty()) {
+                        TextButton(onClick = { confirmDelete = true }) { Text("Delete (${picked.size})", color = pal.accent) }
+                        Spacer(Modifier.width(4.dp))
+                        Button(
+                            onClick = { vm.restoreFromTrash(picked.toList()); picked.clear() },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White)
+                        ) { Text("Restore (${picked.size})", fontWeight = FontWeight.SemiBold) }
+                    } else {
+                        TextButton(onClick = { vm.restoreFromTrash(trashList.map { it.id }) }) { Text("Restore all", color = pal.accent) }
+                    }
+                }
+                if (picked.isEmpty()) Text(
+                    "Tap PDFs to pick several, then restore them or delete them forever. Deleting forever can't be undone.",
+                    fontSize = 12.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+                )
+            }
+            LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                items(trashList, key = { it.id }) { p ->
+                    val on = p.id in picked
+                    val ago = android.text.format.DateUtils.getRelativeTimeSpanString(p.trashed, System.currentTimeMillis(), android.text.format.DateUtils.MINUTE_IN_MILLIS).toString()
+                    val size = android.text.format.Formatter.formatShortFileSize(ctx, p.size)
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .background(if (on) pal.accent.copy(alpha = 0.10f) else Color.Transparent)
+                            .clickable { if (on) picked.remove(p.id) else picked.add(p.id) }
+                            .padding(start = 20.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier.size(24.dp).clip(CircleShape)
+                                .background(if (on) pal.accent else Color.Transparent)
+                                .border(1.5.dp, if (on) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) { if (on) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp)) }
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(p.title(), fontSize = 15.sp, fontWeight = FontWeight.Medium, color = pal.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text("Deleted $ago · $size", fontSize = 12.sp, color = pal.soft)
+                        }
+                        if (picked.isEmpty()) TextButton(onClick = { vm.restoreFromTrash(listOf(p.id)) }) { Text("Restore", color = pal.accent) }
                         else Spacer(Modifier.width(8.dp))
                     }
                 }

@@ -114,12 +114,13 @@ class PickTree : ActivityResultContracts.OpenDocumentTree() {
         )
 }
 
-enum class PdfMenuAction { Pin, Rename, Move, Remove, Delete }
+enum class PdfMenuAction { Pin, Rename, Move, Copy, Remove, Delete }
 
 sealed interface PdfDlg {
     class Rename(val pdf: PdfEntity) : PdfDlg
     class Move(val ids: List<Long>, val folderIds: List<Long> = emptyList()) : PdfDlg
     class RemoveItems(val pdfIds: List<Long>, val folderIds: List<Long>) : PdfDlg
+    class Copy(val ids: List<Long>) : PdfDlg
     /** [title] is only used when a single PDF is being deleted. */
     class Delete(val ids: List<Long>, val title: String) : PdfDlg
 }
@@ -304,8 +305,9 @@ fun PdfRow(
                         DropdownMenuItem(text = { Text(if (pdf.pinned) "Unpin" else "Pin to top") }, onClick = { menu = false; onMore(PdfMenuAction.Pin) })
                         DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onMore(PdfMenuAction.Rename) })
                         DropdownMenuItem(text = { Text("Move to…") }, onClick = { menu = false; onMore(PdfMenuAction.Move) })
+                        DropdownMenuItem(text = { Text("Copy to…") }, onClick = { menu = false; onMore(PdfMenuAction.Copy) })
                         DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { menu = false; onMore(PdfMenuAction.Remove) })
-                        DropdownMenuItem(text = { Text("Delete from phone", color = pal.accent) }, onClick = { menu = false; onMore(PdfMenuAction.Delete) })
+                        DropdownMenuItem(text = { Text("Move to Trash", color = pal.accent) }, onClick = { menu = false; onMore(PdfMenuAction.Delete) })
                     }
                 }
             } else Spacer(Modifier.width(8.dp))
@@ -338,7 +340,8 @@ fun FolderRow(
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (f.pinned) Icon(Icons.Rounded.PushPin, "Pinned", tint = pal.accent, modifier = Modifier.padding(end = 5.dp).size(14.dp))
-                Text(f.name, fontFamily = Serif, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = pal.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(f.name, fontFamily = Serif, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = pal.ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                if (f.link != null) Icon(Icons.Rounded.PhoneAndroid, "A folder on your phone", tint = pal.soft, modifier = Modifier.padding(start = 6.dp).size(14.dp))
             }
             Text(subtitle, fontSize = 12.sp, color = pal.soft)
         }
@@ -386,12 +389,20 @@ fun Hint(title: String, body: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun FolderDialog(title: String, initialName: String, initialColor: Int, confirm: String, onDismiss: () -> Unit, onOk: (String, Int) -> Unit) {
+fun FolderDialog(
+    title: String, initialName: String, initialColor: Int, confirm: String, onDismiss: () -> Unit,
+    check: (suspend (String) -> String?)? = null, onOk: (String, Int) -> Unit
+) {
     val pal = LocalPal.current
     var name by remember { mutableStateOf(initialName) }
     var color by remember { mutableIntStateOf(initialColor) }
     val fr = remember { FocusRequester() }
     LaunchedEffect(Unit) { fr.requestFocus() }
+    var problem by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(name) {
+        problem = null
+        if (check != null && name.isNotBlank() && name != initialName) { delay(250); problem = check(name) }
+    }
     AlertDialog(
         onDismissRequest = onDismiss, containerColor = pal.surface,
         title = { Text(title, fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
@@ -399,7 +410,8 @@ fun FolderDialog(title: String, initialName: String, initialColor: Int, confirm:
             Column {
                 OutlinedTextField(
                     name, { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth().focusRequester(fr),
-                    placeholder = { Text("e.g. Physics") }
+                    placeholder = { Text("e.g. Physics") }, isError = problem != null,
+                    supportingText = { val pr = problem; if (pr != null) Text(pr) }
                 )
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -411,7 +423,7 @@ fun FolderDialog(title: String, initialName: String, initialColor: Int, confirm:
                 }
             }
         },
-        confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = { onOk(name.trim(), color) }) { Text(confirm) } },
+        confirmButton = { TextButton(enabled = name.isNotBlank() && problem == null, onClick = { onOk(name.trim(), color) }) { Text(confirm) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
@@ -426,7 +438,9 @@ fun FolderDialog(title: String, initialName: String, initialColor: Int, confirm:
 fun FolderPicker(
     folders: List<FolderEntity>, exclude: Set<Long>, title: String, onPick: (Long?) -> Unit, onDismiss: () -> Unit,
     subtitle: String? = null, current: Set<Long?> = emptySet(), stats: FolderStats? = null,
-    onNewFolder: ((String, Int, Long?) -> Unit)? = null
+    onNewFolder: ((String, Int, Long?) -> Unit)? = null,
+    phoneOf: (Long) -> Boolean = { false }, needPhone: Boolean = false,
+    nameCheck: (suspend (Long?, String) -> String?)? = null
 ) {
     val pal = LocalPal.current
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -452,7 +466,9 @@ fun FolderPicker(
     val tokens = remember(query) { query.lowercase().split(' ').filter { it.isNotBlank() } }
     val searching = tokens.isNotEmpty()
     val hereName = trail.lastOrNull()?.name ?: "Library"
-    val same = current.isNotEmpty() && current.all { it == here }
+    val same = !needPhone && current.isNotEmpty() && current.all { it == here }
+    val onPhone = here != null && phoneOf(here)
+    val blocked = needPhone && !onPhone
 
     fun depth(id: Long?): Int {
         var d = 0
@@ -535,7 +551,7 @@ fun FolderPicker(
                             Hint("No folders match", "Try fewer or shorter words.")
                         } else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 8.dp)) {
                             items(results, key = { it.id }) { f ->
-                                PickFolderRow(f, paths[f.id], f.id in current) { go(f.id) }
+                                PickFolderRow(f, paths[f.id], f.id in current, phoneOf(f.id)) { go(f.id) }
                             }
                         }
                     } else {
@@ -549,7 +565,7 @@ fun FolderPicker(
                             )
                         } else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 8.dp)) {
                             items(kids, key = { it.id }) { f ->
-                                PickFolderRow(f, stats?.subtitle(f.id), f.id in current) { go(f.id) }
+                                PickFolderRow(f, stats?.subtitle(f.id), f.id in current, phoneOf(f.id)) { go(f.id) }
                             }
                         }
                     }
@@ -557,8 +573,23 @@ fun FolderPicker(
             }
 
             Box(Modifier.fillMaxWidth().height(1.dp).background(pal.line))
+            if (onPhone) {
+                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.PhoneAndroid, null, tint = pal.soft, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (needPhone) "A real copy is made on your phone." else "Files and folders really move on your phone.",
+                        fontSize = 12.sp, color = pal.soft
+                    )
+                }
+            } else if (needPhone) {
+                Text(
+                    "Copy works on phone folders. Open a folder marked with the phone icon.",
+                    fontSize = 12.sp, color = pal.soft, modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 12.dp)
+                )
+            }
             Button(
-                onClick = { finish { onPick(here) } }, enabled = !same,
+                onClick = { finish { onPick(here) } }, enabled = !same && !blocked,
                 modifier = Modifier.padding(16.dp).fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = pal.accent, contentColor = Color.White,
@@ -568,7 +599,7 @@ fun FolderPicker(
                 Icon(Icons.Rounded.FolderOpen, null, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    if (same) "Already in “$hereName”" else "Move to “$hereName”",
+                    if (blocked) "Choose a phone folder" else if (same) "Already in “$hereName”" else if (needPhone) "Copy to “$hereName”" else "Move to “$hereName”",
                     fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
             }
@@ -576,7 +607,10 @@ fun FolderPicker(
     }
 
     if (creating && onNewFolder != null) {
-        FolderDialog("New folder", "", folders.count { it.parentId == here } % FolderTones.size, "Create", { creating = false }) { n, c ->
+        FolderDialog(
+            "New folder", "", folders.count { it.parentId == here } % FolderTones.size, "Create", { creating = false },
+            check = { typed -> val nc = nameCheck; if (nc != null) nc(here, typed) else null }
+        ) { n, c ->
             onNewFolder(n, c, here); creating = false
         }
     }
@@ -599,7 +633,7 @@ private fun Crumb(text: String, last: Boolean, home: Boolean = false, onClick: (
 }
 
 @Composable
-private fun PickFolderRow(f: FolderEntity, sub: String?, isCurrent: Boolean, onClick: () -> Unit) {
+private fun PickFolderRow(f: FolderEntity, sub: String?, isCurrent: Boolean, phone: Boolean, onClick: () -> Unit) {
     val pal = LocalPal.current
     val tone = FolderTones[f.color.mod(FolderTones.size)]
     Row(
@@ -621,6 +655,7 @@ private fun PickFolderRow(f: FolderEntity, sub: String?, isCurrent: Boolean, onC
                 modifier = Modifier.clip(RoundedCornerShape(50)).background(pal.accent.copy(alpha = 0.14f)).padding(horizontal = 8.dp, vertical = 3.dp)
             )
         }
+        if (phone) Icon(Icons.Rounded.PhoneAndroid, "A folder on your phone", tint = pal.soft, modifier = Modifier.padding(start = 8.dp).size(16.dp))
         Spacer(Modifier.width(4.dp))
         Icon(Icons.Rounded.ChevronRight, null, tint = pal.soft)
     }
@@ -678,7 +713,20 @@ fun PdfDialogHost(vm: LibraryVm) {
             FolderPicker(
                 folders, exclude, if (n == 1) "Move to" else "Move $n $noun to",
                 { vm.moveItems(d.ids, d.folderIds, it); vm.clearSel(); vm.pdfDialog = null }, { vm.pdfDialog = null },
-                subtitle = one, current = cur, stats = stats, onNewFolder = { nm, c, par -> vm.createFolder(nm, c, par) }
+                subtitle = one, current = cur, stats = stats, onNewFolder = { nm, c, par -> vm.createFolder(nm, c, par) },
+                phoneOf = { id -> folders.firstOrNull { it.id == id }?.link != null },
+                nameCheck = { parent, typed -> vm.folderNameProblem(parent, typed, null) }
+            )
+        }
+        is PdfDlg.Copy -> {
+            val stats = remember(allPdfs, folders) { FolderStats(allPdfs, folders) }
+            val one = if (d.ids.size == 1) allPdfs.firstOrNull { it.id == d.ids[0] }?.title() else null
+            FolderPicker(
+                folders, emptySet(), if (d.ids.size == 1) "Copy to" else "Copy ${d.ids.size} PDFs to",
+                { id -> if (id != null) vm.copyPdfs(d.ids, id); vm.clearSel(); vm.pdfDialog = null }, { vm.pdfDialog = null },
+                subtitle = one, stats = stats, onNewFolder = { nm, c, par -> vm.createFolder(nm, c, par) },
+                phoneOf = { id -> folders.firstOrNull { it.id == id }?.link != null }, needPhone = true,
+                nameCheck = { parent, typed -> vm.folderNameProblem(parent, typed, null) }
             )
         }
         is PdfDlg.RemoveItems -> {
@@ -697,15 +745,23 @@ fun PdfDialogHost(vm: LibraryVm) {
                 dismissButton = { TextButton(onClick = { vm.pdfDialog = null }) { Text("Cancel") } }
             )
         }
-        is PdfDlg.Delete -> AlertDialog(
-            onDismissRequest = { vm.pdfDialog = null }, containerColor = pal.surface,
-            title = {
-                Text(if (d.ids.size == 1) "Delete “${d.title}”?" else "Delete ${d.ids.size} PDFs?", fontFamily = Serif, fontWeight = FontWeight.SemiBold)
-            },
-            text = { Text("This permanently deletes the file from your phone and can't be undone. To keep the file, choose Remove from Shelf instead.") },
-            confirmButton = { TextButton(onClick = { vm.deleteFromPhone(d.ids); vm.pdfDialog = null }) { Text("Delete forever", color = pal.accent) } },
-            dismissButton = { TextButton(onClick = { vm.pdfDialog = null }) { Text("Cancel") } }
-        )
+        is PdfDlg.Delete -> {
+            val one = d.ids.size == 1
+            AlertDialog(
+                onDismissRequest = { vm.pdfDialog = null }, containerColor = pal.surface,
+                title = {
+                    Text(if (one) "Move “${d.title}” to Trash?" else "Move ${d.ids.size} PDFs to Trash?", fontFamily = Serif, fontWeight = FontWeight.SemiBold)
+                },
+                text = {
+                    Text(
+                        if (one) "Nothing is erased yet: the file moves to a hidden Trash folder on your phone. Restore it, or delete it forever, in Settings › Trash."
+                        else "Nothing is erased yet: the files move to a hidden Trash folder on your phone. Restore them, or delete them forever, in Settings › Trash."
+                    )
+                },
+                confirmButton = { TextButton(onClick = { vm.trashPdfs(d.ids); vm.pdfDialog = null }) { Text("Move to Trash", color = pal.accent) } },
+                dismissButton = { TextButton(onClick = { vm.pdfDialog = null }) { Text("Cancel") } }
+            )
+        }
         null -> {}
     }
 }

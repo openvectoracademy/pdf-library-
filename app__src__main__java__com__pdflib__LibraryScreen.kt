@@ -164,8 +164,9 @@ fun LibraryScreen(vm: LibraryVm) {
                                 more = false
                                 vm.setPdfPinned(selPdfs, !allPinned); vm.setFoldersPinned(selFolders, !allPinned); vm.clearSel()
                             })
+                            if (selFolders.isEmpty()) DropdownMenuItem(text = { Text("Copy to…") }, onClick = { more = false; vm.pdfDialog = PdfDlg.Copy(selPdfs) })
                             DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { more = false; vm.pdfDialog = PdfDlg.RemoveItems(selPdfs, selFolders) })
-                            if (selFolders.isEmpty()) DropdownMenuItem(text = { Text("Delete from phone", color = pal.accent) }, onClick = {
+                            if (selFolders.isEmpty()) DropdownMenuItem(text = { Text("Move to Trash", color = pal.accent) }, onClick = {
                                 more = false
                                 vm.pdfDialog = PdfDlg.Delete(selPdfs, pdfs.firstOrNull { it.id == selPdfs.firstOrNull() }?.title() ?: "")
                             })
@@ -313,8 +314,14 @@ fun LibraryScreen(vm: LibraryVm) {
     )
 
     when (val d = dlg) {
-        is Dlg.New -> FolderDialog("New folder", "", stats.subCount(currentId ?: -1L) % FolderTones.size, "Create", { dlg = null }) { n, c -> vm.createFolder(n, c, currentId); dlg = null }
-        is Dlg.Edit -> FolderDialog("Edit folder", d.f.name, d.f.color, "Save", { dlg = null }) { n, c -> vm.updateFolder(d.f.id, n, c); dlg = null }
+        is Dlg.New -> FolderDialog(
+            "New folder", "", stats.subCount(currentId ?: -1L) % FolderTones.size, "Create", { dlg = null },
+            check = { t -> vm.folderNameProblem(currentId, t, null) }
+        ) { n, c -> vm.createFolder(n, c, currentId); dlg = null }
+        is Dlg.Edit -> FolderDialog(
+            "Edit folder", d.f.name, d.f.color, "Save", { dlg = null },
+            check = { t -> vm.folderNameProblem(d.f.parentId, t, d.f.id) }
+        ) { n, c -> vm.updateFolder(d.f.id, n, c); dlg = null }
         is Dlg.Delete -> {
             val n = stats.pdfCount(d.f.id)
             val pl = if (n == 1) "" else "s"
