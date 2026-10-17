@@ -37,6 +37,10 @@ fun linkKey(uri: String): String = Integer.toHexString(uri.hashCode())
 
 /** "primary:Download/Physics" -> "Physics". */
 fun treeFolderName(uri: Uri): String {
+    if (uri.scheme == "file") {
+        val path = uri.path ?: return "Phone storage"
+        return if (path == "/storage/emulated/0") "Internal storage" else java.io.File(path).name.ifEmpty { "SD card" }
+    }
     val id = try { DocumentsContract.getTreeDocumentId(uri) } catch (e: Exception) { return "Phone folder" }
     val path = id.substringAfter(':', "")
     return path.substringAfterLast('/').ifEmpty { if (id.startsWith("primary")) "Internal storage" else "SD card" }

@@ -151,6 +151,7 @@ fun SearchScreen(vm: LibraryVm) {
 }
 
 private fun treeLabel(uri: Uri): String {
+    if (uri.scheme == "file") return treeFolderName(uri)
     val id = try { DocumentsContract.getTreeDocumentId(uri) } catch (e: Exception) { uri.toString() }
     return id.substringAfter(':', id).ifEmpty { "Internal storage" }
 }
@@ -442,6 +443,27 @@ fun SettingsScreen(vm: LibraryVm) {
             }
         }
 
+        if (Storage.supported()) item {
+            SettingsSection(
+                "Phone access",
+                footer = if (vm.allFiles) "Shelf reads your whole phone directly. Every PDF and folder appears on its own, and changes you make in a phone folder happen on your phone too."
+                else "One switch in Android's settings lets Shelf show every PDF and folder on your phone, much faster."
+            ) {
+                SettingRow(
+                    Icons.Rounded.PhoneAndroid, "All files access", if (vm.allFiles) "On. Your whole phone is in Shelf" else "Off. Tap to turn on",
+                    tint = if (vm.allFiles) pal.accent else pal.ink,
+                    trailing = {
+                        Text(
+                            if (vm.allFiles) "ON" else "OFF", fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                            color = if (vm.allFiles) pal.accent else pal.soft,
+                            modifier = Modifier.clip(RoundedCornerShape(50))
+                                .background((if (vm.allFiles) pal.accent else pal.soft).copy(alpha = 0.14f)).padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                ) { Storage.openSettings(ctx) }
+            }
+        }
+
         item {
             SettingsSection("Linked folders", footer = "Link more phone folders with the + button in the Library. Tap one to open the folder it feeds.") {
                 if (links.isEmpty()) {
@@ -453,14 +475,14 @@ fun SettingsScreen(vm: LibraryVm) {
                 }
                 links.forEach { l ->
                     key(l.id) {
-                        val prefix = l.uri + "/document/"
+                        val prefix = PhoneOps.prefixOf(Uri.parse(l.uri))
                         val where = when {
                             l.target == null -> "Library"
                             else -> folderPath[l.target] ?: "a removed folder"
                         }
                         LinkSettingRow(
                             l, where, pdfs.count { it.uri.startsWith(prefix) },
-                            hasAccess = vm.sources.any { it.toString() == l.uri }, canEdit = l.uri in vm.writable,
+                            hasAccess = vm.sources.any { it.toString() == l.uri } || (l.uri.startsWith("file:") && vm.allFiles), canEdit = l.uri in vm.writable,
                             onOpen = { vm.goToFolder(l.target) },
                             onFix = { fixPicker.launch(null) }, onUnlink = { confirmLink = l }
                         )

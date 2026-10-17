@@ -22,7 +22,35 @@ object Scanner {
     /** [rel] = the folder names between the linked folder and the file, e.g. ["Chapter 1", "Notes"]. */
     class Found(val uri: String, val name: String, val size: Long, val modified: Long, val rel: List<String> = emptyList())
 
+    /** All files access: walk the real file system. Much faster than document queries. */
+    private fun scanFiles(tree: Uri, onCount: (Int) -> Unit): List<Found> {
+        val out = ArrayList<Found>()
+        val rootPath = tree.path ?: return out
+        val root = File(rootPath)
+        val stack = ArrayList<Pair<File, List<String>>>()
+        stack.add(root to emptyList<String>())
+        while (stack.isNotEmpty()) {
+            val (dir, rel) = stack.removeAt(stack.lastIndex)
+            val kids = dir.listFiles() ?: continue
+            for (f in kids) {
+                val name = f.name
+                if (f.isDirectory) {
+                    if (name.startsWith(".")) continue
+                    // Android's own app folders can't be read; Android/media (WhatsApp, Telegram) can, so it stays.
+                    if (dir.path == "$rootPath/Android" && (name.equals("data", true) || name.equals("obb", true))) continue
+                    stack.add(f to (rel + name))
+                } else if (name.endsWith(".pdf", true)) {
+                    out.add(Found(Uri.fromFile(f).toString(), name, f.length(), f.lastModified(), rel))
+                    if (out.size % 100 == 0) onCount(out.size)
+                }
+            }
+        }
+        onCount(out.size)
+        return out
+    }
+
     fun scan(ctx: Context, tree: Uri, onCount: (Int) -> Unit): List<Found> {
+        if (tree.scheme == "file") return scanFiles(tree, onCount)
         val out = ArrayList<Found>()
         val stack = ArrayList<Pair<String, List<String>>>()
         stack.add(DocumentsContract.getTreeDocumentId(tree) to emptyList<String>())

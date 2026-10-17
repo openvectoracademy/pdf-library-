@@ -104,6 +104,8 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     var scanFound by mutableIntStateOf(0)
     var sources by mutableStateOf<List<Uri>>(emptyList())
     var writable by mutableStateOf<Set<String>>(emptySet())
+    /** All files access is on: Shelf reads the phone's storage directly. */
+    var allFiles by mutableStateOf(Storage.granted())
     private var again = false
     private var lastScanAt = 0L
 
@@ -148,6 +150,10 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         val perms = ctx.contentResolver.persistedUriPermissions.filter { it.isReadPermission && DocumentsContract.isTreeUri(it.uri) }
         sources = perms.map { it.uri }
         writable = perms.filter { it.isWritePermission }.mapTo(HashSet<String>()) { it.uri.toString() }
+        allFiles = Storage.granted()
+        val direct = if (allFiles) Storage.roots(ctx) else emptyList()
+        PhoneOps.fileRoots = direct.map { it.path }
+        if (allFiles) writable = writable + direct.map { Uri.fromFile(it).toString() }
     }
 
     /** Asks for edit access too (needed to rename or delete real files); falls back to read-only. */
@@ -200,7 +206,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     /** Older installs had plain "sources": give each one a link that drops its PDFs into the Library, as before. */
     private suspend fun ensureLinks(roots: List<Uri>): List<LinkEntity> {
         val have = dao.linksOnce().mapTo(HashSet<String>()) { it.uri }
-        for (r in roots) if (r.toString() !in have) dao.insertLink(LinkEntity(uri = r.toString(), target = null, mode = LINK_FLAT, name = treeFolderName(r)))
+        for (r in roots) if (r.toString() !in have) dao.insertLink(LinkEntity(uri = r.toString(), target = null, mode = if (r.scheme == "file") LINK_MIRROR else LINK_FLAT, name = treeFolderName(r)))
         return dao.linksOnce()
     }
 
@@ -226,8 +232,8 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         refreshSources()
         lastScanAt = System.currentTimeMillis()
         scanning = true; scanFound = 0
-        val roots = sources
-        val prefixes = roots.map { it.toString() + "/document/" }
+        val roots: List<Uri> = if (allFiles) PhoneOps.fileRoots.map { Uri.fromFile(java.io.File(it)) } else sources
+        val prefixes = roots.map { PhoneOps.prefixOf(it) }
         viewModelScope.launch(Dispatchers.IO) {
             val linkList = ensureLinks(roots)
             val folderRows = dao.foldersOnce()
@@ -256,7 +262,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                 try {
                     val found = Scanner.scan(ctx, root) { scanFound = base + it }
                     base += found.size
-                    val prefix = root.toString() + "/document/"
+                    val prefix = PhoneOps.prefixOf(root)
                     val link = linkList.firstOrNull { it.uri == root.toString() }
                     val rows = dao.pdfsOnce().filter { it.trashed == 0L }
                     val known = rows.mapTo(HashSet<String>()) { it.uri }
@@ -315,7 +321,12 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     }
 
     /** Called whenever Shelf comes back to the screen: files renamed or added meanwhile are picked up. */
-    fun onForeground() { if (System.currentTimeMillis() - lastScanAt > 30_000) rescan() }
+    fun onForeground() {
+        val was = allFiles
+        refreshSources()
+        if (allFiles != was) { rescan(); return }
+        if (System.currentTimeMillis() - lastScanAt > 30_000) rescan()
+    }
 
     /** Used when a PDF can't be opened: rescan so a renamed file is found, then return its new address (null = still not found). */
     suspend fun repairPdf(id: Long): String? {
@@ -636,7 +647,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
             val key = f.link ?: continue
             if (key == oldKey || key.startsWith("$oldKey/")) dao.setFolderLink(f.id, "$k|$newRel" + key.removePrefix(oldKey))
         }
-        val treePrefix = pd.tree.toString() + "/document/"
+        val treePrefix = PhoneOps.prefixOf(pd.tree)
         for (p in dao.pdfsOnce()) {
             if (!p.uri.startsWith(treePrefix)) continue
             val id = PhoneOps.idOf(p.uri)
@@ -745,10 +756,14 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         return if (safe.endsWith(".pdf", true)) safe else "$safe.pdf"
     }
 
-    private fun canWrite(p: PdfEntity) = p.uri.substringBefore("/document/") in writable
+    private fun canWrite(p: PdfEntity) = if (p.uri.startsWith("file://")) allFiles else p.uri.substringBefore("/document/") in writable
 
     /** Does the phone folder of [p] already hold a file called [fileName]? Asks the phone itself. */
     private fun folderHasFile(p: PdfEntity, fileName: String): Boolean {
+        if (p.uri.startsWith("file://")) {
+            val me = java.io.File(PhoneOps.idOf(p.uri))
+            return me.parentFile?.listFiles()?.any { it.name.equals(fileName, true) && it.path != me.path } ?: false
+        }
         return try {
             val uri = Uri.parse(p.uri)
             val docId = DocumentsContract.getDocumentId(uri)
@@ -790,9 +805,13 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
             if (problem != null) { withContext(Dispatchers.Main) { toast(problem) }; return@launch }
             var renamed: Uri? = null
             var exists = false
-            try { renamed = DocumentsContract.renameDocument(ctx.contentResolver, Uri.parse(p.uri), fileName) }
-            catch (e: IllegalStateException) { exists = (e.message ?: "").contains("exist", true) }
-            catch (e: Exception) { }
+            if (p.uri.startsWith("file://")) {
+                renamed = PhoneOps.renameFile(p.uri, fileName)
+            } else {
+                try { renamed = DocumentsContract.renameDocument(ctx.contentResolver, Uri.parse(p.uri), fileName) }
+                catch (e: IllegalStateException) { exists = (e.message ?: "").contains("exist", true) }
+                catch (e: Exception) { }
+            }
             if (exists) {
                 withContext(Dispatchers.Main) { toast("A file named “$fileName” already exists in this phone folder. Choose another name.") }
                 return@launch
