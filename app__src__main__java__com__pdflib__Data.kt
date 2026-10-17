@@ -56,7 +56,9 @@ data class PdfEntity(
     /** The file wasn't found on the last scan. The row (folder, stars, bookmarks, progress) is kept, never auto-deleted. */
     @ColumnInfo(defaultValue = "0") val missing: Boolean = false,
     @ColumnInfo(defaultValue = "0") val pinned: Boolean = false,
-    @ColumnInfo(defaultValue = "0") val sortIndex: Int = 0
+    @ColumnInfo(defaultValue = "0") val sortIndex: Int = 0,
+    /** A fingerprint of the file's content ("-" = couldn't be read). Survives renames, so a renamed file is always recognised. */
+    val fp: String? = null
 )
 
 @Entity(
@@ -114,6 +116,7 @@ interface LibDao {
     @Query("UPDATE pdfs SET uri=:uri, name=:name, size=:size, modified=:modified, missing=0 WHERE id=:id")
     suspend fun relink(id: Long, uri: String, name: String, size: Long, modified: Long)
     @Query("DELETE FROM pdfs WHERE id IN (:ids)") suspend fun deleteByIds(ids: List<Long>)
+    @Query("UPDATE pdfs SET fp=:fp WHERE id=:id") suspend fun setFp(id: Long, fp: String?)
 
     @Insert suspend fun addBookmark(b: BookmarkEntity)
     @Query("DELETE FROM bookmarks WHERE id=:id") suspend fun deleteBookmark(id: Long)
@@ -125,7 +128,7 @@ interface LibDao {
     suspend fun restorePdf(id: Long, folder: Long?, fav: Boolean, page: Int, count: Int, label: String?, hidden: Boolean, pinned: Boolean, sortIndex: Int)
 }
 
-@Database(entities = [FolderEntity::class, PdfEntity::class, BookmarkEntity::class, LinkEntity::class], version = 5, exportSchema = false)
+@Database(entities = [FolderEntity::class, PdfEntity::class, BookmarkEntity::class, LinkEntity::class], version = 6, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): LibDao
 
@@ -133,7 +136,7 @@ abstract class AppDb : RoomDatabase() {
         @Volatile private var inst: AppDb? = null
         fun get(c: Context): AppDb = inst ?: synchronized(this) {
             inst ?: Room.databaseBuilder(c.applicationContext, AppDb::class.java, "library.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5) // never a destructive fallback: folders, stars and bookmarks must survive updates
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6) // never a destructive fallback: folders, stars and bookmarks must survive updates
                 .build().also { inst = it }
         }
     }
@@ -168,5 +171,11 @@ private val MIGRATION_4_5 = object : Migration(4, 5) {
         db.execSQL("CREATE TABLE IF NOT EXISTS `links` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uri` TEXT NOT NULL, `target` INTEGER, `mode` INTEGER NOT NULL, `name` TEXT NOT NULL, `created` INTEGER NOT NULL)")
         db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_links_uri` ON `links` (`uri`)")
         db.execSQL("ALTER TABLE folders ADD COLUMN link TEXT")
+    }
+}
+
+private val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE pdfs ADD COLUMN fp TEXT")
     }
 }

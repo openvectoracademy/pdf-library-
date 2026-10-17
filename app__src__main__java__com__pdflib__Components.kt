@@ -53,6 +53,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 val Serif = FontFamily.Serif
@@ -626,16 +627,27 @@ private fun PickFolderRow(f: FolderEntity, sub: String?, isCurrent: Boolean, onC
 }
 
 @Composable
-fun RenameDialog(initial: String, onDismiss: () -> Unit, onOk: (String) -> Unit) {
+fun RenameDialog(initial: String, onDismiss: () -> Unit, check: (suspend (String) -> String?)? = null, onOk: (String) -> Unit) {
     val pal = LocalPal.current
     var text by remember { mutableStateOf(TextFieldValue(initial, TextRange(0, initial.length))) }
     val fr = remember { FocusRequester() }
     LaunchedEffect(Unit) { fr.requestFocus() }
+    var problem by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(text.text) {
+        problem = null
+        if (check != null && text.text.isNotBlank()) { delay(250); problem = check(text.text) }
+    }
     AlertDialog(
         onDismissRequest = onDismiss, containerColor = pal.surface,
         title = { Text("Rename PDF", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
-        text = { OutlinedTextField(text, { text = it }, singleLine = true, modifier = Modifier.fillMaxWidth().focusRequester(fr)) },
-        confirmButton = { TextButton(enabled = text.text.isNotBlank(), onClick = { onOk(text.text.trim()) }) { Text("Rename") } },
+        text = {
+            OutlinedTextField(
+                text, { text = it }, singleLine = true, isError = problem != null,
+                supportingText = { val pr = problem; if (pr != null) Text(pr) },
+                modifier = Modifier.fillMaxWidth().focusRequester(fr)
+            )
+        },
+        confirmButton = { TextButton(enabled = text.text.isNotBlank() && problem == null, onClick = { onOk(text.text.trim()) }) { Text("Rename") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
@@ -647,7 +659,7 @@ fun PdfDialogHost(vm: LibraryVm) {
     val folders by vm.folders.collectAsState()
     val allPdfs by vm.pdfs.collectAsState()
     when (val d = vm.pdfDialog) {
-        is PdfDlg.Rename -> RenameDialog(d.pdf.title(), { vm.pdfDialog = null }) { n -> vm.renamePdf(d.pdf, n); vm.pdfDialog = null }
+        is PdfDlg.Rename -> RenameDialog(d.pdf.title(), { vm.pdfDialog = null }, check = { t -> vm.renameProblem(d.pdf, t) }) { n -> vm.renamePdf(d.pdf, n); vm.pdfDialog = null }
         is PdfDlg.Move -> {
             val stats = remember(allPdfs, folders) { FolderStats(allPdfs, folders) }
             val exclude = remember(d.folderIds, folders) { d.folderIds.flatMap { descendants(it, folders) }.toSet() }

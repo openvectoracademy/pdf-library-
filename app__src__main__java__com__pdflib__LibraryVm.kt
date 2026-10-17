@@ -13,6 +13,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.SharingStarted
@@ -101,6 +103,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     var sources by mutableStateOf<List<Uri>>(emptyList())
     var writable by mutableStateOf<Set<String>>(emptySet())
     private var again = false
+    private var lastScanAt = 0L
 
     // dialogs + undo
     var pdfDialog by mutableStateOf<PdfDlg?>(null)
@@ -219,6 +222,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     fun rescan() {
         if (scanning) { again = true; return }
         refreshSources()
+        lastScanAt = System.currentTimeMillis()
         scanning = true; scanFound = 0
         val roots = sources
         val prefixes = roots.map { it.toString() + "/document/" }
@@ -269,13 +273,20 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                     }
                     val used = HashSet<Long>()
                     val fresh = ArrayList<PdfEntity>()
+                    // 1) same content fingerprint (survives any rename), 2) same name and size, 3) same size and date.
+                    val candFp = candidates.filter { val x = it.fp; x != null && x != "-" }
+                    var fpBudget = 200
                     for (f in found) {
                         if (f.uri in known) continue
-                        val old = candidates.firstOrNull { it.id !in used && it.name == f.name && it.size == f.size }
-                            ?: candidates.firstOrNull { it.id !in used && f.size > 0 && it.size == f.size && it.modified == f.modified }
+                        val newFp: String? = if (candFp.isNotEmpty() && fpBudget > 0) { fpBudget--; Fingerprint.of(ctx, Uri.parse(f.uri)) } else null
+                        val old: PdfEntity? =
+                            (if (newFp != null) candFp.firstOrNull { it.id !in used && it.fp == newFp && it.size == f.size } else null)
+                                ?: candidates.firstOrNull { it.id !in used && it.name == f.name && it.size == f.size }
+                                ?: candidates.firstOrNull { it.id !in used && f.size > 0 && it.size == f.size && it.modified == f.modified }
                         if (old != null) {
                             used.add(old.id)
                             dao.relink(old.id, f.uri, f.name, f.size, f.modified)
+                            if (old.fp != newFp) dao.setFp(old.id, newFp)
                         } else {
                             fresh.add(PdfEntity(uri = f.uri, name = f.name, size = f.size, modified = f.modified, folderId = placeFor(link, f.rel)))
                         }
@@ -290,6 +301,52 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.Main) {
                 scanning = false
                 if (again) { again = false; rescan() }
+            }
+            fillFingerprints()
+        }
+    }
+
+    /** Quietly fingerprints PDFs that don't have one yet (a batch per scan), so a later rename can always be traced. */
+    private suspend fun fillFingerprints() {
+        val todo = dao.pdfsOnce().filter { it.fp == null && !it.missing }.take(60)
+        for (p in todo) dao.setFp(p.id, Fingerprint.of(ctx, Uri.parse(p.uri)) ?: "-")
+    }
+
+    /** Called whenever Shelf comes back to the screen: files renamed or added meanwhile are picked up. */
+    fun onForeground() { if (System.currentTimeMillis() - lastScanAt > 30_000) rescan() }
+
+    /** Used when a PDF can't be opened: rescan so a renamed file is found, then return its new address (null = still not found). */
+    suspend fun repairPdf(id: Long): String? {
+        val before = dao.pdfsOnce().firstOrNull { it.id == id }?.uri ?: return null
+        withContext(Dispatchers.Main) { rescan() }
+        withTimeoutOrNull(25_000) { while (scanning || again) delay(100) }
+        val after = dao.pdfsOnce().firstOrNull { it.id == id } ?: return null
+        return if (after.uri != before && !after.missing) after.uri else null
+    }
+
+    /** "Find this file": point a lost PDF at the file you pick. Folder, stars, bookmarks and progress stay. */
+    fun relinkManually(id: Long, uri: Uri, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            grant(uri)
+            val taken = dao.pdfsOnce().any { it.uri == uri.toString() && it.id != id }
+            var name = "document.pdf"; var size = 0L
+            try {
+                ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) { c.getString(0)?.let { name = it }; size = c.getLong(1) }
+                }
+            } catch (e: Exception) { }
+            if (!name.endsWith(".pdf", true)) name += ".pdf"
+            var ok = false
+            if (!taken) {
+                try {
+                    dao.relink(id, uri.toString(), name, size, System.currentTimeMillis())
+                    dao.setFp(id, Fingerprint.of(ctx, uri) ?: "-")
+                    ok = true
+                } catch (e: Exception) { }
+            }
+            withContext(Dispatchers.Main) {
+                if (taken) toast("That file is already in Shelf under another entry.")
+                onDone(ok)
             }
         }
     }
@@ -511,14 +568,64 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     }
 
     /** Renames the real file when Shelf has edit access; otherwise renames it inside Shelf only. */
+    /** What the file will be called on the phone: unsafe characters become "-", ".pdf" is added. */
+    private fun fileNameFor(typed: String): String {
+        val safe = typed.trim().replace(Regex("[\\\\/:*?\"<>|]"), "-").trim().ifEmpty { "document" }
+        return if (safe.endsWith(".pdf", true)) safe else "$safe.pdf"
+    }
+
+    private fun canWrite(p: PdfEntity) = p.uri.substringBefore("/document/") in writable
+
+    /** Does the phone folder of [p] already hold a file called [fileName]? Asks the phone itself. */
+    private fun folderHasFile(p: PdfEntity, fileName: String): Boolean {
+        return try {
+            val uri = Uri.parse(p.uri)
+            val docId = DocumentsContract.getDocumentId(uri)
+            if ('/' !in docId) return false
+            val tree = DocumentsContract.buildTreeDocumentUri(uri.authority, DocumentsContract.getTreeDocumentId(uri))
+            val kids = DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId.substringBeforeLast('/'))
+            ctx.contentResolver.query(
+                kids, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    if (c.getString(0) != docId && (c.getString(1) ?: "").equals(fileName, true)) return true
+                }
+            }
+            false
+        } catch (e: Exception) { false }
+    }
+
+    /** Live check for the rename box: a message to show, or null when the name is fine. */
+    suspend fun renameProblem(p: PdfEntity, typed: String): String? = withContext(Dispatchers.IO) {
+        val t = typed.trim()
+        if (t.isEmpty()) return@withContext null
+        val fileName = fileNameFor(t)
+        if (fileName.length > 120) return@withContext "That name is too long."
+        if (!canWrite(p) || fileName.equals(p.name, true)) return@withContext null
+        val dir = p.uri.substringBeforeLast("%2F", "")
+        val knownClash = dir.isNotEmpty() && dao.pdfsOnce().any {
+            it.id != p.id && !it.missing && it.name.equals(fileName, true) && it.uri.substringBeforeLast("%2F", "") == dir
+        }
+        if (knownClash || folderHasFile(p, fileName)) "A file named “$fileName” already exists in this phone folder. Choose another name." else null
+    }
+
+    /** Renames the real file when Shelf has edit access; otherwise only the name inside Shelf changes. */
     fun renamePdf(p: PdfEntity, newName: String) {
         val wanted = newName.trim()
         if (wanted.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
-            val safe = wanted.replace(Regex("[\\\\/:*?\"<>|]"), "-").trim().ifEmpty { "document" }
-            val fileName = if (safe.endsWith(".pdf", true)) safe else "$safe.pdf"
+            val fileName = fileNameFor(wanted)
+            val problem = renameProblem(p, wanted)
+            if (problem != null) { withContext(Dispatchers.Main) { toast(problem) }; return@launch }
             var renamed: Uri? = null
-            try { renamed = DocumentsContract.renameDocument(ctx.contentResolver, Uri.parse(p.uri), fileName) } catch (e: Exception) { }
+            var exists = false
+            try { renamed = DocumentsContract.renameDocument(ctx.contentResolver, Uri.parse(p.uri), fileName) }
+            catch (e: IllegalStateException) { exists = (e.message ?: "").contains("exist", true) }
+            catch (e: Exception) { }
+            if (exists) {
+                withContext(Dispatchers.Main) { toast("A file named “$fileName” already exists in this phone folder. Choose another name.") }
+                return@launch
+            }
             var ok = false
             if (renamed != null) {
                 try {

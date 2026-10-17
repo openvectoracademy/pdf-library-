@@ -2,7 +2,12 @@
 
 package com.pdflib
 
+import android.content.Context
+import androidx.compose.foundation.shape.RoundedCornerShape
+import android.content.Intent
 import android.graphics.Bitmap
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -77,6 +82,14 @@ private val InvertFilter = ColorFilter.colorMatrix(
     ))
 )
 
+/** Pick one PDF and keep access to it (used by "Find this file"). */
+private class PickOnePdf : ActivityResultContracts.OpenDocument() {
+    override fun createIntent(context: Context, input: Array<String>): Intent =
+        super.createIntent(context, input).addFlags(
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+        )
+}
+
 @Composable
 fun ReaderScreen(vm: LibraryVm, pdfId: Long) {
     val pal = LocalPal.current
@@ -85,21 +98,31 @@ fun ReaderScreen(vm: LibraryVm, pdfId: Long) {
     val pdfs by vm.pdfs.collectAsState()
     val pdf = pdfs.firstOrNull { it.id == pdfId }
     val title = remember(pdfId) { pdf?.title() ?: "" }
-    val uriStr = remember(pdfId) { pdf?.uri }
     val startPage = remember(pdfId) { pdf?.lastPage ?: 0 }
 
     var doc by remember(pdfId) { mutableStateOf<PdfDoc?>(null) }
     var firstRatio by remember(pdfId) { mutableStateOf(1.414f) }
     var failed by remember(pdfId) { mutableStateOf(false) }
+    var retry by remember(pdfId) { mutableIntStateOf(0) }
+    var searching by remember(pdfId) { mutableStateOf(false) }
+    val findFile = rememberLauncherForActivityResult(PickOnePdf()) { u -> if (u != null) vm.relinkManually(pdfId, u) { ok -> if (ok) retry++ } }
     val holder = remember(pdfId) { arrayOfNulls<PdfDoc>(1) }
 
     BackHandler { vm.closeReader() }
     DisposableEffect(Unit) { view.keepScreenOn = true; onDispose { view.keepScreenOn = false } }
-    LaunchedEffect(pdfId) {
-        val u = uriStr
-        if (u == null) { failed = true; return@LaunchedEffect }
-        val d = PdfDoc.open(ctx, Uri.parse(u))
-        if (d == null || d.pageCount == 0) { failed = true; return@LaunchedEffect }
+    LaunchedEffect(pdfId, retry) {
+        failed = false
+        // Always use the file's current address: a rescan may have just followed a rename.
+        val current = vm.pdfs.value.firstOrNull { it.id == pdfId }?.uri
+        var d = if (current != null) PdfDoc.open(ctx, Uri.parse(current)) else null
+        if (d == null && retry == 0) {
+            // Not there any more? It was probably renamed or moved. Look for it before giving up.
+            searching = true
+            val fixed = vm.repairPdf(pdfId)
+            searching = false
+            if (fixed != null) d = PdfDoc.open(ctx, Uri.parse(fixed))
+        }
+        if (d == null || d.pageCount == 0) { d?.close(); failed = true; return@LaunchedEffect }
         holder[0] = d
         d.pageSize(0)?.let { firstRatio = it.second.toFloat() / it.first }
         doc = d
@@ -111,11 +134,16 @@ fun ReaderScreen(vm: LibraryVm, pdfId: Long) {
         val d = doc
         when {
             failed -> Column(Modifier.fillMaxSize().background(pal.bg).statusBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Hint("Couldn't open this PDF", "It may be password-protected, damaged, or moved. Rescan from Settings if the file was moved.")
-                TextButton(onClick = { vm.closeReader() }) { Text("Go back", color = pal.accent) }
+                Hint("Couldn't find this PDF", "It may have been moved out of your linked folders, deleted, or it is password-protected. Point Shelf to the file and everything you saved for it (folder, stars, bookmarks, progress) stays.")
+                Button(
+                    onClick = { findFile.launch(arrayOf("application/pdf")) }, shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White),
+                    contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
+                ) { Text("Find this file", fontWeight = FontWeight.SemiBold) }
+                TextButton(onClick = { vm.closeReader() }) { Text("Go back", color = pal.soft) }
             }
             d == null -> Box(Modifier.fillMaxSize().background(pal.bg), contentAlignment = Alignment.Center) {
-                Text("Opening…", color = pal.soft, fontSize = 14.sp)
+                Text(if (searching) "Looking for this file…" else "Opening…", color = pal.soft, fontSize = 14.sp)
             }
             else -> Reading(vm, pdfId, title, d, firstRatio, startPage, readerBg)
         }

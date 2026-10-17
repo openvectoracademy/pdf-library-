@@ -195,3 +195,29 @@ object Thumbs {
         }
     }
 }
+
+/** A short content fingerprint (size + first and last 32 KB). The name can change, the fingerprint can't. */
+object Fingerprint {
+    fun of(ctx: Context, uri: Uri): String? {
+        return try {
+            ctx.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                java.io.FileInputStream(pfd.fileDescriptor).use { fis ->
+                    val ch = fis.channel
+                    val size = ch.size()
+                    if (size <= 0) return null
+                    val md = java.security.MessageDigest.getInstance("SHA-1")
+                    val buf = java.nio.ByteBuffer.allocate(32 * 1024)
+                    fun chunk(pos: Long) {
+                        buf.clear()
+                        val n = ch.read(buf, pos)
+                        if (n > 0) md.update(buf.array(), 0, n)
+                    }
+                    chunk(0)
+                    if (size > 32 * 1024) chunk(maxOf(0L, size - 32 * 1024))
+                    md.update(size.toString().toByteArray())
+                    md.digest().joinToString("") { "%02x".format(it) }
+                }
+            }
+        } catch (e: Exception) { null }
+    }
+}

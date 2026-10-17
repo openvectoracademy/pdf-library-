@@ -79,8 +79,8 @@ fun LinkModeSheet(vm: LibraryVm, tree: Uri, target: Long?, targetName: String, o
     val pal = LocalPal.current
     var mode by remember { mutableIntStateOf(LINK_MIRROR) }
     val name = remember(tree) { treeFolderName(tree) }
-    ModalBottomSheet(onDismissRequest = onClose, containerColor = pal.surface) {
-        Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 20.dp).padding(bottom = 16.dp)) {
+    ModalBottomSheet(onDismissRequest = onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = pal.surface) {
+        Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal = 20.dp).padding(bottom = 28.dp)) {
             Overline("Link a phone folder", color = pal.accent)
             Spacer(Modifier.height(6.dp))
             Text(name, fontFamily = Serif, fontWeight = FontWeight.Bold, fontSize = 26.sp, color = pal.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -172,8 +172,8 @@ fun LinksSheet(vm: LibraryVm, target: Long?, targetName: String, onFix: () -> Un
     val pdfs by vm.pdfs.collectAsState()
     val mine = links.filter { it.target == target }
     var confirm by remember { mutableStateOf<LinkEntity?>(null) }
-    ModalBottomSheet(onDismissRequest = onClose, containerColor = pal.surface) {
-        Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 16.dp)) {
+    ModalBottomSheet(onDismissRequest = onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = pal.surface) {
+        Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 28.dp)) {
             Text("Linked phone folders", fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = pal.ink, modifier = Modifier.padding(horizontal = 20.dp))
             Text(
                 "New PDFs in these phone folders appear in $targetName by themselves.",
