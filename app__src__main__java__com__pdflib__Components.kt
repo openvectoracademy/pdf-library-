@@ -85,6 +85,33 @@ fun arrangeFolders(list: List<FolderEntity>): List<FolderEntity> {
     }).map { it.first }
 }
 
+/** Library "Sort by". 0 keeps your own drag-and-drop order; the rest sort by a rule. Pinned items always stay on top. */
+const val SORT_CUSTOM = 0
+val SortLabels = listOf("Custom order", "Newest date first", "Oldest date first", "Largest first", "Smallest first", "Name A–Z", "Name Z–A")
+
+fun sortPdfs(list: List<PdfEntity>, mode: Int): List<PdfEntity> {
+    if (mode == SORT_CUSTOM) return arrangePdfs(list)
+    val byName = sortNatural(list)   // also the tie-breaker for equal dates and sizes
+    val body = when (mode) {
+        1 -> byName.sortedByDescending { it.modified }
+        2 -> byName.sortedBy { it.modified }
+        3 -> byName.sortedByDescending { it.size }
+        4 -> byName.sortedBy { it.size }
+        5 -> byName
+        else -> byName.asReversed()
+    }
+    return body.sortedByDescending { it.pinned }
+}
+
+/** Folders only follow the name rules; for date and size they keep their usual order. */
+fun sortFolders(list: List<FolderEntity>, mode: Int): List<FolderEntity> {
+    if (mode != 5 && mode != 6) return arrangeFolders(list)
+    val byName = list.map { it to numChunk.findAll(it.name.lowercase()).map { m -> m.value }.toList() }
+        .sortedWith(Comparator<Pair<FolderEntity, List<String>>> { x, y -> compareChunks(x.second, y.second) })
+        .map { it.first }
+    return (if (mode == 5) byName else byName.asReversed()).sortedByDescending { it.pinned }
+}
+
 private fun orderCompare(pa: Boolean, ia: Int, pb: Boolean, ib: Int): Int {
     if (pa != pb) return if (pa) -1 else 1
     val ra = if (ia > 0) ia else Int.MAX_VALUE
@@ -209,6 +236,39 @@ private fun RefreshButton(refreshing: Boolean, onClick: () -> Unit) {
             Icons.Rounded.Refresh, "Refresh library", tint = if (spinning) pal.accent else pal.ink,
             modifier = Modifier.graphicsLayer { rotationZ = rot.value }
         )
+    }
+}
+
+@Composable
+fun SortMenu(mode: Int, onPick: (Int) -> Unit) {
+    val pal = LocalPal.current
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Row(
+            Modifier.clip(RoundedCornerShape(50)).clickable { open = true }.padding(start = 10.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Rounded.SwapVert, null, tint = pal.accent, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(5.dp))
+            Text(SortLabels[mode.coerceIn(0, SortLabels.lastIndex)], fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = pal.ink)
+            Icon(Icons.Rounded.ArrowDropDown, null, tint = pal.soft, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            Text("Sort by", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = pal.soft, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+            SortLabels.forEachIndexed { i, label ->
+                val on = i == mode
+                DropdownMenuItem(
+                    leadingIcon = { if (on) Icon(Icons.Rounded.Check, null, tint = pal.accent) else Spacer(Modifier.size(24.dp)) },
+                    text = {
+                        Column {
+                            Text(label, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) pal.accent else pal.ink)
+                            if (i == SORT_CUSTOM) Text("Hold and drag to rearrange", fontSize = 11.sp, color = pal.soft)
+                        }
+                    },
+                    onClick = { open = false; onPick(i) }
+                )
+            }
+        }
     }
 }
 

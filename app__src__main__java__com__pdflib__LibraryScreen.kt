@@ -55,8 +55,9 @@ fun LibraryScreen(vm: LibraryVm) {
     val currentId = vm.stack.lastOrNull()
     val byId = remember(folders) { folders.associateBy { it.id } }
     val current = currentId?.let { byId[it] }
-    val subs = remember(folders, currentId) { arrangeFolders(folders.filter { it.parentId == currentId }) }
-    val docs = remember(pdfs, currentId) { arrangePdfs(pdfs.filter { it.folderId == currentId }) }
+    val sortMode = vm.sortMode
+    val subs = remember(folders, currentId, sortMode) { sortFolders(folders.filter { it.parentId == currentId }, sortMode) }
+    val docs = remember(pdfs, currentId, sortMode) { sortPdfs(pdfs.filter { it.folderId == currentId }, sortMode) }
 
     // Hold-and-drag reordering (pinned rows stay on top; rows only move inside their own block).
     val scope = rememberCoroutineScope()
@@ -71,7 +72,8 @@ fun LibraryScreen(vm: LibraryVm) {
         )
     }
     reorder.resolve = { key ->
-        if (key is Long) {
+        if (vm.sortMode != SORT_CUSTOM) null
+        else if (key is Long) {
             val i = docs.indexOfFirst { it.id == key }
             if (i < 0) null else {
                 val pin = docs[i].pinned
@@ -247,7 +249,12 @@ fun LibraryScreen(vm: LibraryVm) {
 
                     // ---- folders ----
                     if (subs.isNotEmpty()) {
-                        item(key = "fl") { Overline("Folders", Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp)) }
+                        item(key = "fl") {
+                            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Overline("Folders", Modifier.weight(1f))
+                                if (docs.size < 2 && subs.size > 1) SortMenu(sortMode) { vm.updateSort(it) }
+                            }
+                        }
                         items(shownSubs, key = { "f${it.id}" }) { f ->
                             FolderRow(f, stats.subtitle(f.id),
                                 onClick = { if (selecting) vm.toggleFolderSel(f.id) else vm.enter(f.id) },
@@ -263,7 +270,10 @@ fun LibraryScreen(vm: LibraryVm) {
                     if (docs.isNotEmpty()) {
                         item(key = "pl") {
                             val label = if (current == null && subs.isNotEmpty()) "Unsorted" else "PDFs"
-                            Overline("$label · ${docs.size}", Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp))
+                            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Overline("$label · ${docs.size}", Modifier.weight(1f))
+                                if (docs.size > 1) SortMenu(sortMode) { vm.updateSort(it) }
+                            }
                         }
                         items(shownDocs, key = { it.id }) { p ->
                             PdfRow(p, null, selecting, p.id in vm.selection,

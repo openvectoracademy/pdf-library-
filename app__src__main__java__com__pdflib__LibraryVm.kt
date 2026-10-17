@@ -116,6 +116,10 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     var invert by mutableStateOf(prefs.getBoolean("invert", false))
     fun updateInvert(v: Boolean) { invert = v; prefs.edit().putBoolean("invert", v).apply() }
 
+    /** Library "Sort by" (see SortLabels). Remembered between launches. */
+    var sortMode by mutableIntStateOf(prefs.getInt("sort", 0))
+    fun updateSort(m: Int) { sortMode = m; prefs.edit().putInt("sort", m).apply() }
+
     var themeMode by mutableStateOf(ThemeMode.fromKey(prefs.getString("theme", null)))
     fun updateTheme(m: ThemeMode) { themeMode = m; prefs.edit().putString("theme", m.key).apply() }
 
