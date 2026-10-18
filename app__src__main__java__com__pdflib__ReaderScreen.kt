@@ -38,6 +38,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -165,9 +166,10 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
     // Page-number badge: shows while the list is moving, and for a moment after a tap; fades away 1 s after things go still.
     var badge by remember { mutableStateOf(false) }
     var badgeTap by remember { mutableIntStateOf(0) }
-    val scrolling = listState.isScrollInProgress
-    LaunchedEffect(scrolling, badgeTap) {
-        if (scrolling) badge = true
+    var dragP by remember { mutableStateOf<Float?>(null) }   // set while the badge itself is being dragged
+    val moving = listState.isScrollInProgress || dragP != null
+    LaunchedEffect(moving, badgeTap) {
+        if (moving) badge = true
         else if (badge || badgeTap > 0) { badge = true; delay(1000); badge = false }
     }
     var sheet by remember { mutableStateOf(false) }
@@ -338,24 +340,41 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
                 if (count > 1) ((listState.firstVisibleItemIndex + frac) / (count - 1)).coerceIn(0f, 1f) else 0f
             }
         }
+        val trackLo = topPadPx + badgeMargin
+        val trackHi = (constraints.maxHeight - bottomInset - barPx - badgeH - badgeMargin).coerceAtLeast(trackLo)
+        val track by rememberUpdatedState((trackHi - trackLo).coerceAtLeast(1f))
         AnimatedVisibility(
             badge, Modifier.align(Alignment.TopEnd),
             enter = fadeIn(tween(120)) + slideInHorizontally(tween(180)) { it },
             exit = fadeOut(tween(260)) + slideOutHorizontally(tween(260)) { it }
         ) {
-            Box(
+            val shownProgress = dragP ?: progress
+            val shownPage = dragP?.let { (it * (count - 1)).roundToInt() } ?: current
+            Row(
                 Modifier
-                    .offset {
-                        val lo = topPadPx + badgeMargin
-                        val hi = (constraints.maxHeight - bottomInset - barPx - badgeH - badgeMargin).coerceAtLeast(lo)
-                        IntOffset(0, (lo + (hi - lo) * progress).toInt())
-                    }
+                    .offset { IntOffset(0, (trackLo + (trackHi - trackLo) * shownProgress).toInt()) }
                     .height(40.dp)
                     .background(Color(0xEB202124), RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp))
+                    // Grab the badge and drag it for fast scrolling through the whole document.
+                    .pointerInput(count) {
+                        detectVerticalDragGestures(
+                            onDragStart = { dragP = progress },
+                            onDragEnd = { dragP = null },
+                            onDragCancel = { dragP = null },
+                            onVerticalDrag = { change, dy ->
+                                change.consume()
+                                val p = ((dragP ?: progress) + dy / track).coerceIn(0f, 1f)
+                                dragP = p
+                                val page = (p * (count - 1)).roundToInt().coerceIn(0, count - 1)
+                                if (page != listState.firstVisibleItemIndex) scope.launch { listState.scrollToItem(page) }
+                            }
+                        )
+                    }
                     .padding(start = 16.dp, end = 14.dp),
-                contentAlignment = Alignment.Center
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("${current + 1}", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                Text("${shownPage + 1}", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                Text(" / $count", fontSize = 13.sp, color = Color.White.copy(alpha = 0.6f))
             }
         }
 
