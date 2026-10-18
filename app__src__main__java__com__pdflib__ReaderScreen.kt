@@ -13,6 +13,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -69,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 import kotlin.math.abs
@@ -159,6 +162,14 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = startPage.coerceIn(0, count - 1))
     val zoom = remember { ZoomState(listState) }
     var chrome by remember { mutableStateOf(true) }
+    // Page-number badge: shows while the list is moving, and for a moment after a tap; fades away 1 s after things go still.
+    var badge by remember { mutableStateOf(false) }
+    var badgeTap by remember { mutableIntStateOf(0) }
+    val scrolling = listState.isScrollInProgress
+    LaunchedEffect(scrolling, badgeTap) {
+        if (scrolling) badge = true
+        else if (badge || badgeTap > 0) { badge = true; delay(1000); badge = false }
+    }
     var sheet by remember { mutableStateOf(false) }
     var jump by remember { mutableStateOf(false) }
     val invert = vm.invert
@@ -286,7 +297,7 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
                 }
                 .pointerInput(Unit) {
                     detectTapGestures(
-                        onTap = { chrome = !chrome },
+                        onTap = { chrome = !chrome; badgeTap++ },
                         onDoubleTap = { p ->
                             val target = if (zoom.scale > 1.25f) 1f else DOUBLE_TAP_ZOOM
                             zoom.animateTo(scope, target, p)
@@ -314,6 +325,37 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
                         PageView(doc, i, ratios[i], baseW, if (settled > 1.15f) 2f else 1f, invert, tiles[i])
                     }
                 }
+            }
+        }
+
+        // The badge rides the right edge and follows your position in the document, like a scroll thumb.
+        val badgeH = with(density) { 40.dp.toPx() }
+        val badgeMargin = with(density) { 8.dp.toPx() }
+        val progress by remember {
+            derivedStateOf {
+                val first = listState.layoutInfo.visibleItemsInfo.firstOrNull()
+                val frac = if (first != null && first.size > 0) (-first.offset.toFloat() / first.size).coerceIn(0f, 1f) else 0f
+                if (count > 1) ((listState.firstVisibleItemIndex + frac) / (count - 1)).coerceIn(0f, 1f) else 0f
+            }
+        }
+        AnimatedVisibility(
+            badge, Modifier.align(Alignment.TopEnd),
+            enter = fadeIn(tween(120)) + slideInHorizontally(tween(180)) { it },
+            exit = fadeOut(tween(260)) + slideOutHorizontally(tween(260)) { it }
+        ) {
+            Box(
+                Modifier
+                    .offset {
+                        val lo = topPadPx + badgeMargin
+                        val hi = (constraints.maxHeight - bottomInset - barPx - badgeH - badgeMargin).coerceAtLeast(lo)
+                        IntOffset(0, (lo + (hi - lo) * progress).toInt())
+                    }
+                    .height(40.dp)
+                    .background(Color(0xEB202124), RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp))
+                    .padding(start = 16.dp, end = 14.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("${current + 1}", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
             }
         }
 
