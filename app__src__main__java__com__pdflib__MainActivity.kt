@@ -85,7 +85,8 @@ private fun Root(vm: LibraryVm = viewModel()) {
     val host = LocalContext.current
     val req = vm.shareReq
     LaunchedEffect(req) {
-        if (req != null) { vm.shareReq = null; ShareTools.run(host, req) }
+        // Clear the request only after it has run: clearing it first would restart (and cancel) this effect.
+        if (req != null) { ShareTools.run(host, req); if (vm.shareReq === req) vm.shareReq = null }
     }
 
     // From Recent, Saved or Settings, Back goes to the Library before it leaves the app.
