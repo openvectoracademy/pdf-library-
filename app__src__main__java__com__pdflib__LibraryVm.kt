@@ -120,6 +120,10 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     var sortMode by mutableIntStateOf(prefs.getInt("sort", 0))
     fun updateSort(m: Int) { sortMode = m; prefs.edit().putInt("sort", m).apply() }
 
+    /** Library as a list (default) or as a grid of page previews. */
+    var gridView by mutableStateOf(prefs.getBoolean("grid", false))
+    fun updateGrid(v: Boolean) { gridView = v; prefs.edit().putBoolean("grid", v).apply() }
+
     var themeMode by mutableStateOf(ThemeMode.fromKey(prefs.getString("theme", null)))
     fun updateTheme(m: ThemeMode) { themeMode = m; prefs.edit().putString("theme", m.key).apply() }
 

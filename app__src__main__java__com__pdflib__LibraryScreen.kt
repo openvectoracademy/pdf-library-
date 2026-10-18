@@ -26,6 +26,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.text.font.FontFamily
@@ -75,7 +76,7 @@ fun LibraryScreen(vm: LibraryVm) {
         if (vm.sortMode != SORT_CUSTOM) null
         else if (key is Long) {
             val i = docs.indexOfFirst { it.id == key }
-            if (i < 0) null else {
+            if (i < 0 || vm.gridView) null else {
                 val pin = docs[i].pinned
                 DragReorder.Group("p", docs.map { it.id }, docs.indexOfFirst { it.pinned == pin }, docs.indexOfLast { it.pinned == pin }) { slice ->
                     vm.reorderPdfs(slice.map { it as Long })
@@ -273,14 +274,36 @@ fun LibraryScreen(vm: LibraryVm) {
                             Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Overline("$label · ${docs.size}", Modifier.weight(1f))
                                 if (docs.size > 1) SortMenu(sortMode) { vm.updateSort(it) }
+                                Spacer(Modifier.width(6.dp))
+                                ViewToggle(vm.gridView) { vm.updateGrid(it) }
                             }
                         }
-                        items(shownDocs, key = { it.id }) { p ->
-                            PdfRow(p, null, selecting, p.id in vm.selection,
-                                onClick = { if (selecting) vm.toggleSel(p.id) else vm.openReader(p.id) },
-                                onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
-                                onMore = { a -> vm.rowAction(p, a) },
-                                modifier = reorderItem(reorder, p.id, pal.surface))
+                        if (vm.gridView) {
+                            val widthDp = LocalConfiguration.current.screenWidthDp
+                            val cols = if (widthDp >= 840) 4 else if (widthDp >= 600) 3 else 2
+                            items(docs.chunked(cols), key = { "g${it.first().id}" }) { rowItems ->
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.Top) {
+                                    rowItems.forEach { p ->
+                                        PdfGridCard(
+                                            p, selecting, p.id in vm.selection,
+                                            onClick = { if (selecting) vm.toggleSel(p.id) else vm.openReader(p.id) },
+                                            onLong = { vm.toggleSel(p.id) },
+                                            onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
+                                            onMore = { a -> vm.rowAction(p, a) },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                    repeat(cols - rowItems.size) { Spacer(Modifier.weight(1f)) }
+                                }
+                            }
+                        } else {
+                            items(shownDocs, key = { it.id }) { p ->
+                                PdfRow(p, null, selecting, p.id in vm.selection,
+                                    onClick = { if (selecting) vm.toggleSel(p.id) else vm.openReader(p.id) },
+                                    onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
+                                    onMore = { a -> vm.rowAction(p, a) },
+                                    modifier = reorderItem(reorder, p.id, pal.surface))
+                            }
                         }
                     }
 

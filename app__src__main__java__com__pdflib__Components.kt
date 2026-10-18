@@ -240,6 +240,115 @@ private fun RefreshButton(refreshing: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
+fun ViewToggle(grid: Boolean, onChange: (Boolean) -> Unit) {
+    val pal = LocalPal.current
+    Row(Modifier.clip(RoundedCornerShape(50)).background(pal.chip).padding(3.dp)) {
+        listOf(false to Icons.Rounded.FormatListBulleted, true to Icons.Rounded.GridView).forEach { (g, icon) ->
+            val on = grid == g
+            Box(
+                Modifier.size(34.dp, 28.dp).clip(RoundedCornerShape(50)).background(if (on) pal.surface else Color.Transparent).clickable { onChange(g) },
+                contentAlignment = Alignment.Center
+            ) { Icon(icon, if (g) "Grid view" else "List view", tint = if (on) pal.accent else pal.soft, modifier = Modifier.size(18.dp)) }
+        }
+    }
+}
+
+/**
+ * Grid preview: the WHOLE first page is shown, never cropped. A wide smartboard slide lies down, a tall book stands up,
+ * both centred inside the same square frame with a thin page edge.
+ */
+@Composable
+fun GridThumb(pdf: PdfEntity, modifier: Modifier = Modifier) {
+    val ctx = LocalContext.current
+    val pal = LocalPal.current
+    val bmp by produceState<Bitmap?>(null, pdf.id, pdf.size) { value = Thumbs.get(ctx, pdf) }
+    BoxWithConstraints(modifier.clip(RoundedCornerShape(14.dp)).background(pal.chip), contentAlignment = Alignment.Center) {
+        val b = bmp
+        if (b != null && b.height > 0) {
+            val r = b.width.toFloat() / b.height
+            val maxW = maxWidth * 0.84f
+            val maxH = maxHeight * 0.84f
+            val w = if (maxW / r <= maxH) maxW else maxH * r
+            val h = w / r
+            Image(
+                b.asImageBitmap(), null,
+                Modifier.size(w, h).clip(RoundedCornerShape(3.dp)).border(1.dp, pal.line, RoundedCornerShape(3.dp)),
+                contentScale = ContentScale.FillBounds
+            )
+        } else Text("PDF", fontSize = 11.sp, color = pal.soft, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+    }
+}
+
+@Composable
+fun PdfGridCard(
+    pdf: PdfEntity, selecting: Boolean, selected: Boolean,
+    onClick: () -> Unit, onLong: () -> Unit, onFav: () -> Unit,
+    onMore: ((PdfMenuAction) -> Unit)?, modifier: Modifier = Modifier
+) {
+    val pal = LocalPal.current
+    val started = pdf.pageCount > 0 && pdf.lastPage > 0 && !pdf.missing
+    var menu by remember { mutableStateOf(false) }
+    val meta = if (pdf.missing) "File not found" else if (started) "p. ${pdf.lastPage + 1} of ${pdf.pageCount}" else formatSize(pdf.size)
+    Column(
+        modifier.padding(horizontal = 4.dp, vertical = 6.dp).clip(RoundedCornerShape(16.dp))
+            .background(if (selected) pal.accent.copy(alpha = 0.10f) else Color.Transparent)
+            .combinedClickable(onClick = onClick, onLongClick = onLong)
+            .padding(6.dp)
+    ) {
+        Box {
+            GridThumb(pdf, Modifier.fillMaxWidth().aspectRatio(1f))
+            if (pdf.pinned) Icon(Icons.Rounded.PushPin, "Pinned", tint = pal.accent, modifier = Modifier.align(Alignment.TopStart).padding(9.dp).size(16.dp))
+            if (selecting) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(8.dp).size(24.dp).clip(CircleShape)
+                        .background(if (selected) pal.accent else pal.surface.copy(alpha = 0.85f))
+                        .border(1.5.dp, if (selected) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) { if (selected) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp)) }
+            } else {
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(5.dp).size(32.dp).clip(CircleShape)
+                        .background(pal.surface.copy(alpha = 0.85f)).clickable(onClick = onFav),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        if (pdf.favorite) Icons.Rounded.Star else Icons.Rounded.StarBorder, "Favorite",
+                        tint = if (pdf.favorite) pal.hi else pal.soft, modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            if (started) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
+                ReadBar((pdf.lastPage + 1f) / pdf.pageCount)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.Top) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    pdf.title(), maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 13.sp, lineHeight = 17.sp,
+                    fontWeight = FontWeight.Medium, color = if (pdf.missing) pal.soft else pal.ink
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(meta, fontSize = 11.sp, color = if (pdf.missing) pal.accent else pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (onMore != null && !selecting) {
+                Box {
+                    IconButton(onClick = { menu = true }, modifier = Modifier.size(28.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.soft, modifier = Modifier.size(18.dp)) }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text(if (pdf.pinned) "Unpin" else "Pin to top") }, onClick = { menu = false; onMore(PdfMenuAction.Pin) })
+                        DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onMore(PdfMenuAction.Rename) })
+                        DropdownMenuItem(text = { Text("Move to…") }, onClick = { menu = false; onMore(PdfMenuAction.Move) })
+                        DropdownMenuItem(text = { Text("Copy to…") }, onClick = { menu = false; onMore(PdfMenuAction.Copy) })
+                        DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { menu = false; onMore(PdfMenuAction.Remove) })
+                        DropdownMenuItem(text = { Text("Move to Trash", color = pal.accent) }, onClick = { menu = false; onMore(PdfMenuAction.Delete) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun SortMenu(mode: Int, onPick: (Int) -> Unit) {
     val pal = LocalPal.current
     var open by remember { mutableStateOf(false) }
