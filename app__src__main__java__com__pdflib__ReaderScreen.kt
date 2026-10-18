@@ -22,6 +22,7 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -231,10 +232,13 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
         val topInset = WindowInsets.systemBars.getTop(density)
         val bottomInset = WindowInsets.systemBars.getBottom(density)
         val viewWpx = constraints.maxWidth.toFloat()
-        val areaHpx = (constraints.maxHeight - topInset - bottomInset).toFloat().coerceAtLeast(1f)
+        // While the top bar is showing, the pages start exactly below it; when it hides they use the full height again.
+        val barPx by animateFloatAsState(if (chrome) with(density) { 56.dp.toPx() } else 0f, tween(180), label = "topBar")
+        val topPadPx = topInset + barPx
+        val areaHpx = (constraints.maxHeight - topPadPx - bottomInset).coerceAtLeast(1f)
         zoom.viewW = viewWpx
         zoom.areaH = areaHpx
-        val topDp = with(density) { topInset.toDp() }
+        val topDp = with(density) { topPadPx.toDp() }
         val bottomDp = with(density) { bottomInset.toDp() }
         val baseW = viewWpx.toInt().coerceAtLeast(1)
 
