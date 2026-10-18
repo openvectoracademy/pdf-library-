@@ -840,6 +840,14 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Shares the selected PDFs in one go (they are sent as separate files). */
+    fun shareSelected(ids: List<Long>) {
+        val list = pdfs.value.filter { it.id in ids }
+        if (list.isEmpty()) return
+        if (list.size > ShareTools.MAX_BATCH) { toast("Pick up to ${ShareTools.MAX_BATCH} PDFs to share at once."); return }
+        shareReq = ShareReq(list, ShareKind.Share)
+    }
+
     /** "Mark as read" / "Mark as unread" (unread also resets the reading position). */
     fun markRead(ids: List<Long>, read: Boolean) {
         viewModelScope.launch {

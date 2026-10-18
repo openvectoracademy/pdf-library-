@@ -181,7 +181,18 @@ fun LibraryScreen(vm: LibraryVm) {
                     Box {
                         IconButton(onClick = { more = true }) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.ink) }
                         DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
-                            if (total == 1) DropdownMenuItem(text = { Text(if (selFolders.isNotEmpty()) "Rename / colour" else "Rename") }, onClick = {
+                            // Things you can do with the PDFs themselves come first.
+                            if (selFolders.isEmpty()) {
+                                MenuItem(if (selPdfs.size == 1) "Share…" else "Share ${selPdfs.size} PDFs…", Icons.Rounded.Share) {
+                                    more = false; vm.shareSelected(selPdfs); vm.clearSel()
+                                }
+                                val allRead = selPdfs.all { id -> pdfs.firstOrNull { it.id == id }?.status() == ReadStatus.Finished }
+                                MenuItem(if (allRead) "Mark as unread" else "Mark as read", if (allRead) Icons.Rounded.Replay else Icons.Rounded.TaskAlt) {
+                                    more = false; vm.markRead(selPdfs, !allRead); vm.clearSel()
+                                }
+                                HorizontalDivider(color = pal.line)
+                            }
+                            if (total == 1) MenuItem(if (selFolders.isNotEmpty()) "Rename / colour" else "Rename", Icons.Rounded.Edit) {
                                 more = false
                                 if (selFolders.isNotEmpty()) {
                                     val fo = byId[selFolders.first()]
@@ -192,17 +203,17 @@ fun LibraryScreen(vm: LibraryVm) {
                                     vm.clearSel()
                                     if (one != null) vm.pdfDialog = PdfDlg.Rename(one)
                                 }
-                            })
-                            DropdownMenuItem(text = { Text(if (allPinned) "Unpin" else "Pin to top") }, onClick = {
+                            }
+                            MenuItem(if (allPinned) "Unpin" else "Pin to top", Icons.Rounded.PushPin) {
                                 more = false
                                 vm.setPdfPinned(selPdfs, !allPinned); vm.setFoldersPinned(selFolders, !allPinned); vm.clearSel()
-                            })
-                            if (selFolders.isEmpty()) DropdownMenuItem(text = { Text("Copy to…") }, onClick = { more = false; vm.pdfDialog = PdfDlg.Copy(selPdfs) })
-                            DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { more = false; vm.pdfDialog = PdfDlg.RemoveItems(selPdfs, selFolders) })
-                            if (selFolders.isEmpty()) DropdownMenuItem(text = { Text("Move to Trash", color = pal.accent) }, onClick = {
+                            }
+                            if (selFolders.isEmpty()) MenuItem("Copy to…", Icons.Rounded.ContentCopy) { more = false; vm.pdfDialog = PdfDlg.Copy(selPdfs) }
+                            MenuItem("Remove from Shelf", Icons.Rounded.VisibilityOff) { more = false; vm.pdfDialog = PdfDlg.RemoveItems(selPdfs, selFolders) }
+                            if (selFolders.isEmpty()) MenuItem("Move to Trash", Icons.Rounded.Delete, danger = true) {
                                 more = false
                                 vm.pdfDialog = PdfDlg.Delete(selPdfs, pdfs.firstOrNull { it.id == selPdfs.firstOrNull() }?.title() ?: "")
-                            })
+                            }
                         }
                     }
                 }

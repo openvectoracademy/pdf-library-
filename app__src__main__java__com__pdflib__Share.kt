@@ -26,7 +26,9 @@ import java.io.FileOutputStream
 /** What the ⋮ menu (or the reader) asked to do with a PDF outside Shelf. */
 enum class ShareKind { Share, OpenIn, Print }
 
-class ShareReq(val pdf: PdfEntity, val kind: ShareKind)
+class ShareReq(val pdfs: List<PdfEntity>, val kind: ShareKind) {
+    constructor(pdf: PdfEntity, kind: ShareKind) : this(listOf(pdf), kind)
+}
 
 fun Context.findActivity(): Activity? {
     var c: Context? = this
@@ -45,35 +47,65 @@ object ShareTools {
         return if (base.endsWith(".pdf", true)) base else "$base.pdf"
     }
 
-    /** Copies the PDF to the cache and returns a shareable content:// address (null if the file can't be read). */
-    suspend fun prepare(ctx: Context, p: PdfEntity): Uri? = withContext(Dispatchers.IO) {
-        try {
-            val dir = File(ctx.cacheDir, DIR).apply { mkdirs() }
-            dir.listFiles()?.forEach { it.delete() }   // only the latest shared file is kept
-            val out = File(dir, cleanName(p.title()))
-            ctx.contentResolver.openInputStream(Uri.parse(p.uri))?.use { input ->
-                FileOutputStream(out).use { input.copyTo(it) }
-            } ?: return@withContext null
-            FileProvider.getUriForFile(ctx, authority(ctx), out)
-        } catch (e: Exception) { null }
+    /** Copies the PDFs to the cache and returns shareable content:// addresses (files that can't be read are skipped). */
+    suspend fun prepareAll(ctx: Context, list: List<PdfEntity>): List<Uri> = withContext(Dispatchers.IO) {
+        val dir = File(ctx.cacheDir, DIR).apply { mkdirs() }
+        dir.listFiles()?.forEach { it.delete() }   // only the latest shared files are kept
+        val used = HashSet<String>()
+        val out = ArrayList<Uri>()
+        for (p in list) {
+            try {
+                var name = cleanName(p.title())
+                var n = 2
+                while (!used.add(name.lowercase())) name = cleanName(p.title()).removeSuffix(".pdf") + " (" + (n++) + ").pdf"
+                val f = File(dir, name)
+                val ok = ctx.contentResolver.openInputStream(Uri.parse(p.uri))?.use { input ->
+                    FileOutputStream(f).use { input.copyTo(it) }
+                    true
+                } ?: false
+                if (ok) out.add(FileProvider.getUriForFile(ctx, authority(ctx), f))
+            } catch (e: Exception) { }
+        }
+        out
     }
 
+    /** Most PDFs one share can carry: bigger batches overload many apps. */
+    const val MAX_BATCH = 25
+
     suspend fun run(ctx: Context, req: ShareReq) {
-        val p = req.pdf
-        if (p.missing) { toast(ctx, "This file can't be found, so it can't be shared."); return }
-        if (p.size > 8L * 1024 * 1024) toast(ctx, "Preparing PDF…")
-        val uri = prepare(ctx, p)
-        if (uri == null) { toast(ctx, "Couldn't read this PDF."); return }
+        val all = req.pdfs
+        val list = all.filter { !it.missing }
+        if (list.isEmpty()) {
+            toast(ctx, if (all.size == 1) "This file can't be found, so it can't be shared." else "These files can't be found, so they can't be shared.")
+            return
+        }
+        if (list.size > MAX_BATCH) { toast(ctx, "Pick up to $MAX_BATCH PDFs to share at once."); return }
+        if (list.sumOf { it.size } > 8L * 1024 * 1024) toast(ctx, if (list.size == 1) "Preparing PDF…" else "Preparing ${list.size} PDFs…")
+        val uris = prepareAll(ctx, list)
+        if (uris.isEmpty()) { toast(ctx, if (list.size == 1) "Couldn't read this PDF." else "Couldn't read these PDFs."); return }
+        if (uris.size < all.size) toast(ctx, "${all.size - uris.size} of ${all.size} PDFs couldn't be included.")
+        val p = list.first()
+        val uri = uris.first()
         when (req.kind) {
             ShareKind.Share -> {
-                val send = Intent(Intent.ACTION_SEND).apply {
-                    type = "application/pdf"
-                    putExtra(Intent.EXTRA_STREAM, uri)
-                    putExtra(Intent.EXTRA_SUBJECT, p.title())
-                    clipData = ClipData.newRawUri(p.title(), uri)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                launch(ctx, Intent.createChooser(send, "Share PDF").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                val send = if (uris.size == 1) {
+                    Intent(Intent.ACTION_SEND).apply {
+                        type = "application/pdf"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        putExtra(Intent.EXTRA_SUBJECT, p.title())
+                        clipData = ClipData.newRawUri(p.title(), uri)
+                    }
+                } else {
+                    Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                        type = "application/pdf"
+                        putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+                        putExtra(Intent.EXTRA_SUBJECT, "${uris.size} PDFs")
+                        val cd = ClipData.newRawUri("PDFs", uris[0])
+                        uris.drop(1).forEach { cd.addItem(ClipData.Item(it)) }
+                        clipData = cd
+                    }
+                }.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                launch(ctx, Intent.createChooser(send, if (uris.size == 1) "Share PDF" else "Share ${uris.size} PDFs").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
             }
             ShareKind.OpenIn -> {
                 val view = Intent(Intent.ACTION_VIEW).apply {

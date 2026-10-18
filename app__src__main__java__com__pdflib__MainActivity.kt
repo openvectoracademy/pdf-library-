@@ -13,12 +13,15 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.selection.selectable
@@ -130,7 +133,15 @@ private fun Root(vm: LibraryVm = viewModel()) {
             }
         }
         if (vm.searching) SearchScreen(vm)
-        vm.readerId?.let { ReaderScreen(vm, it) }
+        // The reader eases in and out (fade + a slight zoom) instead of popping up; the id is kept while it fades away.
+        val readerId = vm.readerId
+        val lastReader = remember { LongArray(1) }
+        if (readerId != null) lastReader[0] = readerId
+        AnimatedVisibility(
+            visible = readerId != null,
+            enter = fadeIn(tween(220)) + scaleIn(tween(260, easing = FastOutSlowInEasing), initialScale = 0.94f),
+            exit = fadeOut(tween(180)) + scaleOut(tween(200), targetScale = 0.97f)
+        ) { ReaderScreen(vm, lastReader[0]) }
         PdfDialogHost(vm)
         vm.undo?.let { UndoBar(vm, it, Modifier.align(Alignment.BottomCenter)) }
         if (vm.importing) {
