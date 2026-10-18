@@ -2,7 +2,15 @@ package com.pdflib
 
 import android.content.Context
 import android.net.Uri
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.graphics.graphicsLayer
+import kotlinx.coroutines.launch
+import kotlin.math.abs
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -122,7 +130,8 @@ fun LibraryScreen(vm: LibraryVm) {
         reorder.onSource("p", docs.map { it.id })
     }
     val stats = remember(pdfs, folders) { FolderStats(pdfs, folders) }
-    val resume = remember(pdfs) { pdfs.filter { it.lastOpened > 0 && !it.missing }.maxByOrNull { it.lastOpened } }
+    // The three PDFs you read most recently: the first one is "Continue reading", swipe for the others.
+    val recent3 = remember(pdfs) { pdfs.filter { it.lastOpened > 0 && !it.missing }.sortedByDescending { it.lastOpened }.take(3) }
     val paths = remember(folders) { folderPaths(folders) }
     val selecting = vm.selectedCount > 0
     var dlg by remember { mutableStateOf<Dlg?>(null) }
@@ -259,8 +268,8 @@ fun LibraryScreen(vm: LibraryVm) {
                     }
                 } else {
                     // ---- continue reading ----
-                    if (current == null && !selecting && resume != null) item(key = "resume") {
-                        ResumeCard(resume, resume.folderId?.let { paths[it] }) { vm.openReader(resume.id) }
+                    if (current == null && !selecting && recent3.isNotEmpty()) item(key = "resume") {
+                        ResumeCarousel(recent3, paths) { vm.openReader(it) }
                     }
 
                     // ---- folders ----
@@ -450,8 +459,49 @@ private fun timeAgo(t: Long): String {
 }
 
 /** The one thing you most likely want when you open Shelf: pick up exactly where you stopped. */
+private val ResumeCardHeight = 164.dp
+
+/** Up to three recently read PDFs side by side: swipe between them, dots show where you are (tap a dot to jump). */
 @Composable
-private fun ResumeCard(p: PdfEntity, place: String?, onClick: () -> Unit) {
+private fun ResumeCarousel(items: List<PdfEntity>, paths: Map<Long, String>, onOpen: (Long) -> Unit) {
+    val pal = LocalPal.current
+    val scope = rememberCoroutineScope()
+    val pager = rememberPagerState(pageCount = { items.size })
+    // Reading something new puts it first: slide back to it.
+    LaunchedEffect(items.firstOrNull()?.id) { if (pager.currentPage != 0) pager.animateScrollToPage(0) }
+    Column(Modifier.padding(top = 8.dp, bottom = 4.dp)) {
+        HorizontalPager(
+            state = pager, modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(horizontal = 16.dp), pageSpacing = 10.dp
+        ) { i ->
+            val p = items.getOrNull(i) ?: return@HorizontalPager
+            ResumeCard(
+                p, p.folderId?.let { paths[it] }, if (i == 0) "Continue reading" else "Recently read",
+                // The neighbouring cards sit a little back, so the one in front feels like it is leading.
+                Modifier.graphicsLayer {
+                    val o = abs((pager.currentPage - i) + pager.currentPageOffsetFraction).coerceIn(0f, 1f)
+                    val sc = 1f - 0.05f * o
+                    scaleX = sc; scaleY = sc; alpha = 1f - 0.35f * o
+                }
+            ) { onOpen(p.id) }
+        }
+        if (items.size > 1) {
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                repeat(items.size) { i ->
+                    val on = pager.currentPage == i
+                    val w by animateDpAsState(if (on) 20.dp else 6.dp, tween(220), label = "dotWidth")
+                    val c by animateColorAsState(if (on) pal.accent else pal.soft.copy(alpha = 0.35f), tween(220), label = "dotColor")
+                    Box(Modifier.clickable { scope.launch { pager.animateScrollToPage(i) } }.padding(horizontal = 3.dp, vertical = 8.dp)) {
+                        Box(Modifier.height(6.dp).width(w).clip(CircleShape).background(c))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ResumeCard(p: PdfEntity, place: String?, label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val pal = LocalPal.current
     val shape = RoundedCornerShape(22.dp)
     val total = p.pageCount
@@ -460,7 +510,7 @@ private fun ResumeCard(p: PdfEntity, place: String?, onClick: () -> Unit) {
     val done = total > 0 && page >= total
     val frac = if (total > 0) (page.toFloat() / total).coerceIn(0f, 1f) else 0f
     Row(
-        Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth().clip(shape)
+        modifier.fillMaxWidth().height(ResumeCardHeight).clip(shape)
             .background(pal.surface).border(1.dp, pal.line, shape).clickable(onClick = onClick).padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -468,7 +518,7 @@ private fun ResumeCard(p: PdfEntity, place: String?, onClick: () -> Unit) {
         Spacer(Modifier.width(16.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Overline(if (done) "Last read" else "Continue reading", color = pal.accent)
+                Overline(if (done && label == "Continue reading") "Last read" else label, color = pal.accent)
                 Spacer(Modifier.weight(1f))
                 Text(timeAgo(p.lastOpened), fontSize = 11.sp, color = pal.soft)
             }
