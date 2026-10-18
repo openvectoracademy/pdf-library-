@@ -462,6 +462,7 @@ private fun timeAgo(t: Long): String {
 private val ResumeCardHeight = 164.dp
 
 /** Up to three recently read PDFs side by side: swipe between them, dots show where you are (tap a dot to jump). */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ResumeCarousel(items: List<PdfEntity>, paths: Map<Long, String>, onOpen: (Long) -> Unit) {
     val pal = LocalPal.current
