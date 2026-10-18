@@ -186,10 +186,11 @@ fun LinksSheet(vm: LibraryVm, target: Long?, targetName: String, onFix: () -> Un
             if (mine.isEmpty()) Text("Nothing is linked here yet.", fontSize = 14.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
             mine.forEach { l ->
                 key(l.id) {
-                    val prefix = l.uri + "/document/"
+                    val prefix = PhoneOps.prefixOf(Uri.parse(l.uri))
                     LinkCard(
                         l, pdfs.count { it.uri.startsWith(prefix) },
-                        hasAccess = vm.sources.any { it.toString() == l.uri }, canEdit = l.uri in vm.writable,
+                        // Folders read through "All files access" (file:// links) have no saved folder permission, yet are fully readable.
+                        hasAccess = vm.sources.any { it.toString() == l.uri } || (l.uri.startsWith("file:") && vm.allFiles), canEdit = l.uri in vm.writable,
                         onFix = onFix, onUnlink = { confirm = l }
                     )
                 }
