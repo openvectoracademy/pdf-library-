@@ -128,6 +128,16 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     var foldersGrid by mutableStateOf(prefs.getBoolean("foldersGrid", false))
     fun updateFoldersGrid(v: Boolean) { foldersGrid = v; prefs.edit().putBoolean("foldersGrid", v).apply() }
 
+    /** The last few searches that led somewhere, newest first. */
+    var recentSearches by mutableStateOf(prefs.getString("recentSearches", "").orEmpty().split('\n').filter { it.isNotBlank() })
+    fun rememberSearch(q: String) {
+        val t = q.trim()
+        if (t.length < 2) return
+        recentSearches = (listOf(t) + recentSearches.filter { !it.equals(t, true) }).take(6)
+        prefs.edit().putString("recentSearches", recentSearches.joinToString("\n")).apply()
+    }
+    fun clearSearches() { recentSearches = emptyList(); prefs.edit().remove("recentSearches").apply() }
+
     /** Library status filter: 0 All, 1 Unread, 2 In progress, 3 Finished. */
     var statusFilter by mutableIntStateOf(0)
 

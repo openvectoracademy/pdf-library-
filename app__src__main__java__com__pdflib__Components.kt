@@ -28,6 +28,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.TextFieldValue
@@ -335,7 +339,7 @@ fun PdfGridCard(
             }
             if (onMore != null && !selecting) {
                 Box {
-                    IconButton(onClick = { menu = true }, modifier = Modifier.size(28.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.soft, modifier = Modifier.size(18.dp)) }
+                    IconButton(onClick = { menu = true }, modifier = Modifier.size(40.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.soft, modifier = Modifier.size(18.dp)) }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         PdfMenuItems(pdf, { menu = false }, onMore)
                     }
@@ -455,7 +459,8 @@ fun PdfRow(
     pdf: PdfEntity, place: String?, selecting: Boolean, selected: Boolean,
     onClick: () -> Unit, onLong: (() -> Unit)? = null, onFav: () -> Unit,
     onMore: ((PdfMenuAction) -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    highlight: List<String> = emptyList()
 ) {
     val pal = LocalPal.current
     val finished = pdf.done && !pdf.missing
@@ -477,7 +482,7 @@ fun PdfRow(
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.Top) {
                 if (pdf.pinned) Icon(Icons.Rounded.PushPin, "Pinned", tint = pal.accent, modifier = Modifier.padding(top = 3.dp, end = 5.dp).size(14.dp))
-                Text(pdf.title(), maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, color = if (pdf.missing) pal.soft else pal.ink)
+                Text(highlightText(pdf.title(), highlight, pal.accent), maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium, color = if (pdf.missing) pal.soft else pal.ink)
             }
             Spacer(Modifier.height(3.dp))
             Text(meta, fontSize = 12.sp, color = if (pdf.missing) pal.accent else pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -627,7 +632,7 @@ fun FolderGridCard(
             }
             if (!selecting) {
                 Box {
-                    IconButton(onClick = { open = true }, modifier = Modifier.size(28.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.soft, modifier = Modifier.size(18.dp)) }
+                    IconButton(onClick = { open = true }, modifier = Modifier.size(40.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.soft, modifier = Modifier.size(18.dp)) }
                     DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
                         DropdownMenuItem(text = { Text(if (f.pinned) "Unpin" else "Pin to top") }, onClick = { open = false; onPin() })
                         DropdownMenuItem(text = { Text("Rename / colour") }, onClick = { open = false; onEdit() })
@@ -1025,5 +1030,32 @@ fun PdfDialogHost(vm: LibraryVm) {
             )
         }
         null -> {}
+    }
+}
+
+
+/** Bolds and tints the parts of [text] that match the search words. */
+fun highlightText(text: String, tokens: List<String>, color: Color): AnnotatedString {
+    if (tokens.isEmpty()) return AnnotatedString(text)
+    val lower = text.lowercase()
+    if (lower.length != text.length) return AnnotatedString(text)
+    val hit = BooleanArray(text.length)
+    for (t in tokens) {
+        if (t.isEmpty()) continue
+        var i = lower.indexOf(t)
+        while (i >= 0) {
+            for (k in i until minOf(i + t.length, text.length)) hit[k] = true
+            i = lower.indexOf(t, i + t.length)
+        }
+    }
+    return buildAnnotatedString {
+        var k = 0
+        while (k < text.length) {
+            var e = k
+            while (e < text.length && hit[e] == hit[k]) e++
+            if (hit[k]) withStyle(SpanStyle(color = color, fontWeight = FontWeight.Bold)) { append(text.substring(k, e)) }
+            else append(text.substring(k, e))
+            k = e
+        }
     }
 }

@@ -9,7 +9,22 @@ import androidx.activity.ComponentActivity
 import androidx.activity.viewModels
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val shelf: LibraryVm by viewModels()
@@ -91,18 +107,27 @@ private fun Root(vm: LibraryVm = viewModel()) {
 
     // From Recent, Saved or Settings, Back goes to the Library before it leaves the app.
     BackHandler(enabled = vm.tab != 0) { vm.tab = 0 }
+    val navScope = rememberCoroutineScope()
 
     Box(Modifier.fillMaxSize().background(pal.bg)) {
         Column(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f)) {
-                when (vm.tab) {
-                    0 -> LibraryScreen(vm)
-                    1 -> PdfListScreen(vm, "Recent", recent, "Nothing opened yet", "PDFs you read will show up here, ready to pick up where you left off.")
-                    2 -> PdfListScreen(vm, "Saved", saved, "No favourites yet", "Tap the star on any PDF or folder to keep it close for exam week.", savedFolders)
-                    else -> SettingsScreen(vm)
+                // Tabs cross-fade instead of snapping.
+                Crossfade(targetState = vm.tab, animationSpec = tween(160), label = "tab") { t ->
+                    when (t) {
+                        0 -> LibraryScreen(vm)
+                        1 -> PdfListScreen(vm, "Recent", recent, "Nothing opened yet", "PDFs you read will show up here, ready to pick up where you left off.")
+                        2 -> PdfListScreen(vm, "Saved", saved, "No favourites yet", "Tap the star on any PDF or folder to keep it close for exam week.", savedFolders)
+                        else -> SettingsScreen(vm)
+                    }
                 }
             }
-            BottomBar(vm.tab) { vm.tab = it }
+            BottomBar(vm.tab) { i ->
+                // Tapping the Library tab while you are on it: first back to the top level, then to the top of the list.
+                if (i == vm.tab && i == 0) {
+                    if (vm.stack.isNotEmpty()) vm.goToFolder(null) else navScope.launch { vm.libState.animateScrollToItem(0) }
+                } else vm.tab = i
+            }
         }
         if (vm.searching) SearchScreen(vm)
         vm.readerId?.let { ReaderScreen(vm, it) }
@@ -130,15 +155,26 @@ private fun Root(vm: LibraryVm = viewModel()) {
 @Composable
 private fun UndoBar(vm: LibraryVm, note: UndoNote, modifier: Modifier) {
     val pal = LocalPal.current
-    LaunchedEffect(note) { delay(5000); if (vm.undo === note) vm.undo = null }
-    Row(
-        modifier.navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 72.dp).fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp)).background(pal.ink).padding(start = 16.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
+    val left = remember(note) { Animatable(1f) }
+    LaunchedEffect(note) {
+        left.animateTo(0f, tween(5000, easing = LinearEasing))
+        if (vm.undo === note) vm.undo = null
+    }
+    val shown = remember(note) { MutableTransitionState(false).apply { targetState = true } }
+    AnimatedVisibility(
+        visibleState = shown,
+        modifier = modifier.navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 72.dp),
+        enter = fadeIn(tween(160)) + slideInVertically(tween(220)) { it / 2 }
     ) {
-        Text(note.message, Modifier.weight(1f).padding(vertical = 14.dp), color = pal.bg, fontSize = 14.sp)
-        TextButton(onClick = { val act = note.action; vm.undo = null; act() }) {
-            Text("Undo", color = pal.bg, fontWeight = FontWeight.Bold)
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(pal.ink)) {
+            Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(note.message, Modifier.weight(1f).padding(vertical = 14.dp), color = pal.bg, fontSize = 14.sp)
+                TextButton(onClick = { val act = note.action; vm.undo = null; act() }) {
+                    Text("Undo", color = pal.bg, fontWeight = FontWeight.Bold)
+                }
+            }
+            // A thin line shows how long Undo stays available.
+            Box(Modifier.fillMaxWidth(left.value).height(2.dp).background(pal.bg.copy(alpha = 0.45f)))
         }
     }
 }
@@ -150,17 +186,27 @@ private fun BottomBar(selected: Int, onSelect: (Int) -> Unit) {
         "Library" to Icons.Rounded.Book, "Recent" to Icons.Rounded.History,
         "Saved" to Icons.Rounded.Star, "Settings" to Icons.Rounded.Settings
     )
+    val haptic = LocalHapticFeedback.current
     Column(Modifier.background(pal.surface)) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(pal.line))
-        Row(Modifier.fillMaxWidth().navigationBarsPadding().height(60.dp)) {
+        Row(Modifier.fillMaxWidth().navigationBarsPadding().height(64.dp)) {
             items.forEachIndexed { i, (label, icon) ->
                 val on = i == selected
+                val tint by animateColorAsState(if (on) pal.accent else pal.soft, tween(180), label = "tabTint")
+                val pill by animateFloatAsState(if (on) 1f else 0f, tween(200), label = "tabPill")
                 Column(
-                    Modifier.weight(1f).fillMaxHeight().clickable { onSelect(i) },
+                    Modifier.weight(1f).fillMaxHeight().selectable(selected = on, role = Role.Tab) {
+                        if (!on) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onSelect(i)
+                    },
                     horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center
                 ) {
-                    Icon(icon, label, tint = if (on) pal.accent else pal.soft, modifier = Modifier.size(24.dp))
-                    Spacer(Modifier.height(3.dp))
+                    // The active tab gets a soft pill behind its icon, so it is clear at a glance where you are.
+                    Box(
+                        Modifier.width(60.dp).height(30.dp).clip(RoundedCornerShape(15.dp)).background(pal.accent.copy(alpha = 0.14f * pill)),
+                        contentAlignment = Alignment.Center
+                    ) { Icon(icon, null, tint = tint, modifier = Modifier.size(24.dp)) }
+                    Spacer(Modifier.height(2.dp))
                     Text(label, fontSize = 11.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) pal.ink else pal.soft)
                 }
             }

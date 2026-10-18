@@ -2,7 +2,13 @@ package com.pdflib
 
 import android.content.Context
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.ui.draw.shadow
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.pager.HorizontalPager
@@ -382,6 +388,21 @@ fun LibraryScreen(vm: LibraryVm) {
                     }
                 }
             }
+        }
+
+        // Long library: a quick way back to the top (also: tap the Library tab again).
+        val showTop by remember { derivedStateOf { vm.libState.firstVisibleItemIndex > 8 } }
+        AnimatedVisibility(
+            visible = showTop && !selecting && !onboarding,
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 24.dp, bottom = 92.dp),
+            enter = fadeIn(tween(160)) + scaleIn(tween(160), initialScale = 0.8f),
+            exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.8f)
+        ) {
+            Box(
+                Modifier.size(44.dp).shadow(4.dp, CircleShape).clip(CircleShape).background(pal.surface)
+                    .clickable { scope.launch { vm.libState.animateScrollToItem(0) } },
+                contentAlignment = Alignment.Center
+            ) { Icon(Icons.Rounded.KeyboardArrowUp, "Back to top", tint = pal.ink) }
         }
 
         if (!selecting && !onboarding) {

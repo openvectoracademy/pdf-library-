@@ -18,6 +18,11 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.*
@@ -96,16 +101,26 @@ fun SearchScreen(vm: LibraryVm) {
     val paths = remember(folders) { folderPaths(folders) }
     var q by remember { mutableStateOf("") }
     val fr = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val listState = rememberLazyListState()
     LaunchedEffect(Unit) { fr.requestFocus() }
+    // Scrolling the results lowers the keyboard so more of them are visible.
+    LaunchedEffect(listState) { snapshotFlow { listState.isScrollInProgress }.collect { if (it) keyboard?.hide() } }
     BackHandler { vm.searching = false }
 
     val tokens = remember(q) { q.lowercase().split(' ').filter { it.isNotBlank() } }
     val foundFolders = remember(tokens, folders) {
         if (tokens.isEmpty()) emptyList() else folders.filter { f -> val n = f.name.lowercase(); tokens.all { it in n } }.take(20)
     }
+    // Best matches first: titles that start with what you typed, then titles with a word that does, then the rest; recently read ones win ties.
     val found = remember(tokens, pdfs) {
-        if (tokens.isEmpty()) emptyList() else pdfs.filter { p -> val n = (p.title() + " " + p.name).lowercase(); tokens.all { it in n } }.take(200)
+        if (tokens.isEmpty()) emptyList()
+        else pdfs.filter { p -> val n = (p.title() + " " + p.name).lowercase(); tokens.all { it in n } }
+            .sortedWith(compareBy<PdfEntity>({ matchRank(it.title().lowercase(), tokens[0]) }, { -it.lastOpened }))
+            .take(200)
     }
+    val recentlyOpened = remember(pdfs) { pdfs.filter { it.lastOpened > 0 && !it.missing }.sortedByDescending { it.lastOpened }.take(6) }
+    val openResult: (PdfEntity) -> Unit = { p -> vm.rememberSearch(q); vm.openReader(p.id) }
 
     Column(Modifier.fillMaxSize().background(pal.bg).pointerInput(Unit) { detectTapGestures { } }.statusBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().height(60.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -114,40 +129,84 @@ fun SearchScreen(vm: LibraryVm) {
                 BasicTextField(
                     q, { q = it }, singleLine = true, modifier = Modifier.fillMaxWidth().focusRequester(fr),
                     textStyle = TextStyle(color = pal.ink, fontSize = 16.sp), cursorBrush = SolidColor(pal.accent),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { keyboard?.hide(); vm.rememberSearch(q) }),
                     decorationBox = { inner ->
                         Box { if (q.isEmpty()) Text("Search PDFs and folders", color = pal.soft, fontSize = 16.sp); inner() }
                     }
                 )
             }
-            if (q.isNotEmpty()) IconButton(onClick = { q = "" }) { Icon(Icons.Rounded.Close, "Clear", tint = pal.soft) }
+            if (q.isNotEmpty()) IconButton(onClick = { q = ""; fr.requestFocus() }) { Icon(Icons.Rounded.Close, "Clear", tint = pal.soft) }
             else Spacer(Modifier.width(12.dp))
         }
-        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 24.dp)) {
-            if (tokens.isEmpty()) item { Hint("Find anything", "Type part of a file or folder name. ${pdfs.size} PDFs are searched instantly, right on your phone.") }
-            else if (found.isEmpty() && foundFolders.isEmpty()) item { Hint("No matches", "Try fewer or shorter words.") }
+        LazyColumn(Modifier.weight(1f), state = listState, contentPadding = PaddingValues(bottom = 24.dp)) {
+            if (tokens.isEmpty()) {
+                // Nothing typed yet: offer shortcuts instead of an empty screen.
+                if (vm.recentSearches.isNotEmpty()) {
+                    item(key = "rs-head") {
+                        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Overline("Recent searches", Modifier.weight(1f))
+                            TextButton(onClick = { vm.clearSearches() }) { Text("Clear", color = pal.accent, fontSize = 13.sp) }
+                        }
+                    }
+                    item(key = "rs-chips") {
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            vm.recentSearches.forEach { term ->
+                                Row(
+                                    Modifier.clip(RoundedCornerShape(50)).background(pal.chip).clickable { q = term }.padding(horizontal = 14.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Rounded.History, null, tint = pal.soft, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(term, fontSize = 14.sp, color = pal.ink, maxLines = 1)
+                                }
+                            }
+                        }
+                    }
+                }
+                if (recentlyOpened.isNotEmpty()) {
+                    item(key = "ro-head") { Overline("Recently opened", Modifier.padding(start = 16.dp, top = 16.dp, bottom = 4.dp)) }
+                    items(recentlyOpened, key = { "ro${it.id}" }) { p ->
+                        PdfRow(p, p.folderId?.let { paths[it] } ?: "Unsorted", false, false,
+                            onClick = { vm.openReader(p.id) }, onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
+                            onMore = { a -> vm.rowAction(p, a) })
+                    }
+                } else if (vm.recentSearches.isEmpty()) {
+                    item { Hint("Find anything", "Type part of a file or folder name. ${pdfs.size} PDFs are searched instantly, right on your phone.") }
+                }
+            } else if (found.isEmpty() && foundFolders.isEmpty()) {
+                item { Hint("No matches for \u201c${q.trim()}\u201d", "Check the spelling, or try fewer or shorter words.") }
+            }
             if (foundFolders.isNotEmpty()) {
                 item { Overline("Folders", Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp)) }
                 items(foundFolders, key = { "f${it.id}" }) { f ->
-                    Row(Modifier.fillMaxWidth().clickable { vm.goToFolder(f.id) }.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().clickable { vm.rememberSearch(q); vm.goToFolder(f.id) }.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Rounded.Folder, null, tint = FolderTones[f.color.mod(FolderTones.size)])
                         Spacer(Modifier.width(12.dp))
                         Column {
-                            Text(f.name, fontFamily = Serif, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = pal.ink)
+                            Text(highlightText(f.name, tokens, pal.accent), fontFamily = Serif, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = pal.ink)
                             Text(paths[f.id] ?: "", fontSize = 12.sp, color = pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
             }
             if (found.isNotEmpty()) {
-                item { Overline("PDFs · ${found.size}", Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp)) }
+                item { Overline("PDFs \u00b7 ${found.size}", Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp)) }
                 items(found, key = { it.id }) { p ->
                     PdfRow(p, p.folderId?.let { paths[it] } ?: "Unsorted", false, false,
-                        onClick = { vm.openReader(p.id) }, onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
-                        onMore = { a -> vm.rowAction(p, a) })
+                        onClick = { openResult(p) }, onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
+                        onMore = { a -> vm.rowAction(p, a) }, highlight = tokens)
                 }
             }
         }
     }
+}
+
+/** 0 = the title starts with the word, 1 = one of its words does, 2 = it appears somewhere inside. */
+private fun matchRank(title: String, tok: String): Int = when {
+    title.startsWith(tok) -> 0
+    title.contains(" $tok") || title.contains("-$tok") || title.contains("(" + tok) -> 1
+    else -> 2
 }
 
 private fun treeLabel(uri: Uri): String {
