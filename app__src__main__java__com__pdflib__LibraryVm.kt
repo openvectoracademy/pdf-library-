@@ -124,6 +124,10 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     var gridView by mutableStateOf(prefs.getBoolean("grid", false))
     fun updateGrid(v: Boolean) { gridView = v; prefs.edit().putBoolean("grid", v).apply() }
 
+    /** Folders as a list (default) or as a grid of folder cards. */
+    var foldersGrid by mutableStateOf(prefs.getBoolean("foldersGrid", false))
+    fun updateFoldersGrid(v: Boolean) { foldersGrid = v; prefs.edit().putBoolean("foldersGrid", v).apply() }
+
     var themeMode by mutableStateOf(ThemeMode.fromKey(prefs.getString("theme", null)))
     fun updateTheme(m: ThemeMode) { themeMode = m; prefs.edit().putString("theme", m.key).apply() }
 

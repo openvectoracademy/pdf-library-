@@ -548,6 +548,74 @@ fun FolderRow(
 }
 
 @Composable
+fun FolderGridCard(
+    f: FolderEntity, subtitle: String, onClick: () -> Unit,
+    onEdit: () -> Unit, onMove: () -> Unit, onDelete: () -> Unit,
+    onPin: () -> Unit = {}, modifier: Modifier = Modifier,
+    selecting: Boolean = false, selected: Boolean = false,
+    onFav: (() -> Unit)? = null
+) {
+    val pal = LocalPal.current
+    val tone = FolderTones[f.color.mod(FolderTones.size)]
+    var open by remember { mutableStateOf(false) }
+    Column(
+        modifier.padding(horizontal = 4.dp, vertical = 6.dp).clip(RoundedCornerShape(16.dp))
+            .background(if (selected) pal.accent.copy(alpha = 0.10f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(6.dp)
+    ) {
+        Box {
+            Box(
+                Modifier.fillMaxWidth().aspectRatio(1.4f).clip(RoundedCornerShape(14.dp)).background(tone.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) { Icon(Icons.Rounded.Folder, null, tint = tone, modifier = Modifier.size(56.dp)) }
+            if (f.pinned) Icon(Icons.Rounded.PushPin, "Pinned", tint = pal.accent, modifier = Modifier.align(Alignment.TopStart).padding(9.dp).size(16.dp))
+            if (selecting) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(8.dp).size(24.dp).clip(CircleShape)
+                        .background(if (selected) pal.accent else pal.surface.copy(alpha = 0.85f))
+                        .border(1.5.dp, if (selected) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) { if (selected) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp)) }
+            } else if (onFav != null) {
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(5.dp).size(32.dp).clip(CircleShape)
+                        .background(pal.surface.copy(alpha = 0.85f)).clickable(onClick = onFav),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        if (f.favorite) Icons.Rounded.Star else Icons.Rounded.StarBorder, if (f.favorite) "Remove from Saved" else "Save folder",
+                        tint = if (f.favorite) pal.hi else pal.soft, modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.Top) {
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(f.name, fontFamily = Serif, fontSize = 15.sp, lineHeight = 19.sp, fontWeight = FontWeight.SemiBold, color = pal.ink, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    if (f.link != null) Icon(Icons.Rounded.PhoneAndroid, "A folder on your phone", tint = pal.soft, modifier = Modifier.padding(start = 5.dp).size(13.dp))
+                }
+                Spacer(Modifier.height(2.dp))
+                Text(subtitle, fontSize = 11.sp, color = pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (!selecting) {
+                Box {
+                    IconButton(onClick = { open = true }, modifier = Modifier.size(28.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.soft, modifier = Modifier.size(18.dp)) }
+                    DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                        DropdownMenuItem(text = { Text(if (f.pinned) "Unpin" else "Pin to top") }, onClick = { open = false; onPin() })
+                        DropdownMenuItem(text = { Text("Rename / colour") }, onClick = { open = false; onEdit() })
+                        DropdownMenuItem(text = { Text("Move to…") }, onClick = { open = false; onMove() })
+                        DropdownMenuItem(text = { Text("Remove folder", color = pal.accent) }, onClick = { open = false; onDelete() })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun Hint(title: String, body: String, modifier: Modifier = Modifier) {
     val pal = LocalPal.current
     Column(modifier.fillMaxWidth().padding(horizontal = 40.dp, vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
