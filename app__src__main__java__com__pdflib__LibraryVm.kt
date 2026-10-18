@@ -128,12 +128,34 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     var foldersGrid by mutableStateOf(prefs.getBoolean("foldersGrid", false))
     fun updateFoldersGrid(v: Boolean) { foldersGrid = v; prefs.edit().putBoolean("foldersGrid", v).apply() }
 
+    /** Library status filter: 0 All, 1 Unread, 2 In progress, 3 Finished. */
+    var statusFilter by mutableIntStateOf(0)
+
+    // Reading comfort (applies to every PDF; the zoom is remembered per PDF).
+    var keepOn by mutableStateOf(prefs.getBoolean("keepOn", true))
+    fun updateKeepOn(v: Boolean) { keepOn = v; prefs.edit().putBoolean("keepOn", v).apply() }
+    /** Reader brightness 0.05..1, or -1 to follow the phone. */
+    var brightness by mutableFloatStateOf(prefs.getFloat("brightness", -1f))
+    fun updateBrightness(v: Float) { brightness = v; prefs.edit().putFloat("brightness", v).apply() }
+    /** 0 follow the phone, 1 portrait, 2 landscape. */
+    var orient by mutableIntStateOf(prefs.getInt("orient", 0))
+    fun updateOrient(v: Int) { orient = v; prefs.edit().putInt("orient", v).apply() }
+    /** false = continuous scroll, true = one page at a time (swipe sideways). */
+    var pageMode by mutableStateOf(prefs.getBoolean("pageMode", false))
+    fun updatePageMode(v: Boolean) { pageMode = v; prefs.edit().putBoolean("pageMode", v).apply() }
+
+    /** Asked for from a menu or the reader; the screen (which owns an Activity) carries it out. */
+    var shareReq by mutableStateOf<ShareReq?>(null)
+    /** True while a PDF from another app is being copied in. */
+    var importing by mutableStateOf(false)
+
     var themeMode by mutableStateOf(ThemeMode.fromKey(prefs.getString("theme", null)))
     fun updateTheme(m: ThemeMode) { themeMode = m; prefs.edit().putString("theme", m.key).apply() }
 
     init {
         refreshSources()
         rescan()
+        viewModelScope.launch(Dispatchers.IO) { ShareTools.cleanup(ctx) }
     }
 
     private fun toast(m: String) = Toast.makeText(ctx, m, Toast.LENGTH_LONG).show()
@@ -797,6 +819,73 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
             PdfMenuAction.Copy -> pdfDialog = PdfDlg.Copy(listOf(p.id))
             PdfMenuAction.Remove -> pdfDialog = PdfDlg.RemoveItems(listOf(p.id), emptyList())
             PdfMenuAction.Delete -> pdfDialog = PdfDlg.Delete(listOf(p.id), p.title())
+            PdfMenuAction.Share -> shareReq = ShareReq(p, ShareKind.Share)
+            PdfMenuAction.OpenIn -> shareReq = ShareReq(p, ShareKind.OpenIn)
+            PdfMenuAction.Print -> shareReq = ShareReq(p, ShareKind.Print)
+            PdfMenuAction.ToggleRead -> markRead(listOf(p.id), p.status() != ReadStatus.Finished)
+        }
+    }
+
+    /** "Mark as read" / "Mark as unread" (unread also resets the reading position). */
+    fun markRead(ids: List<Long>, read: Boolean) {
+        viewModelScope.launch {
+            ids.chunked(500).forEach { if (read) dao.markRead(it) else dao.markUnread(it) }
+            undo = UndoNote(if (read) "Marked as read" else "Marked as unread") { markRead(ids, !read) }
+        }
+    }
+
+    // ---------- PDFs that arrive from other apps ----------
+    /** "Open with" (one PDF: it opens) and "Share to Shelf" (any number: they are added to the Library). */
+    fun handleIntent(intent: Intent?) {
+        val uris = Imports.urisOf(intent)
+        if (uris.isEmpty()) return
+        intent?.action = null; intent?.data = null   // handled: a recreated activity must not import it again
+        viewModelScope.launch {
+            importing = true
+            val results = withContext(Dispatchers.IO) { uris.mapNotNull { importOne(it) } }
+            importing = false
+            val ids = results.map { it.first }
+            val fresh = results.filter { it.second }.map { it.first }
+            val failed = uris.size - results.size
+            if (failed > 0) toast(if (uris.size == 1) "That file couldn't be opened. Is it a PDF?" else "$failed file" + (if (failed == 1) "" else "s") + " couldn't be added.")
+            if (ids.isEmpty()) return@launch
+            searching = false; pdfDialog = null
+            if (ids.size == 1) {
+                if (fresh.isNotEmpty()) toast("Added to your Library")
+                openReader(ids[0])
+            } else {
+                stack.clear(); clearSel(); tab = 0; closeReader()
+                undo = UndoNote("${fresh.size} PDF" + (if (fresh.size == 1) "" else "s") + " added to Library") { discardImports(fresh) }
+            }
+        }
+    }
+
+    /** Returns (pdf id, true when it is new to the Library). A file already in Shelf is reused. */
+    private suspend fun importOne(u: Uri): Pair<Long, Boolean>? {
+        val known = dao.pdfsOnce()
+        known.firstOrNull { it.uri == u.toString() && it.trashed == 0L }?.let {
+            if (it.hidden) dao.setHidden(listOf(it.id), false)
+            return it.id to false
+        }
+        val file = Imports.copyIn(ctx, u) ?: return null
+        val fp = Fingerprint.of(ctx, Uri.fromFile(file)) ?: "-"
+        val same = if (fp != "-") known.firstOrNull { it.fp == fp && it.size == file.length() && !it.missing && it.trashed == 0L } else null
+        if (same != null) {
+            file.delete()
+            if (same.hidden) dao.setHidden(listOf(same.id), false)
+            return same.id to false
+        }
+        val entity = PdfEntity(uri = Uri.fromFile(file).toString(), name = file.name, size = file.length(), modified = System.currentTimeMillis(), folderId = null, fp = fp)
+        dao.insertPdfs(listOf(entity))
+        val id = dao.pdfsOnce().firstOrNull { it.uri == entity.uri }?.id ?: return null
+        return id to true
+    }
+
+    private fun discardImports(ids: List<Long>) {
+        undo = null
+        viewModelScope.launch(Dispatchers.IO) {
+            dao.pdfsOnce().filter { it.id in ids }.forEach { Imports.delete(ctx, it.uri) }
+            ids.chunked(400).forEach { dao.deleteByIds(it) }
         }
     }
 
@@ -807,7 +896,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         return if (safe.endsWith(".pdf", true)) safe else "$safe.pdf"
     }
 
-    private fun canWrite(p: PdfEntity) = if (p.uri.startsWith("file://")) allFiles else p.uri.substringBefore("/document/") in writable
+    private fun canWrite(p: PdfEntity) = if (p.uri.startsWith("file://")) (allFiles || Imports.isImported(ctx, p.uri)) else p.uri.substringBefore("/document/") in writable
 
     /** Does the phone folder of [p] already hold a file called [fileName]? Asks the phone itself. */
     private fun folderHasFile(p: PdfEntity, fileName: String): Boolean {
@@ -910,7 +999,10 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             val done = ArrayList<Long>()
             var failed = 0
+            var gone = 0
             for (p in targets) {
+                // A PDF that came in from another app lives in Shelf's own storage: deleting it just deletes that copy.
+                if (Imports.isImported(ctx, p.uri)) { Imports.delete(ctx, p.uri); dao.deleteByIds(listOf(p.id)); gone++; continue }
                 if (p.missing) { dao.deleteByIds(listOf(p.id)); continue }
                 if (!PhoneOps.isTreeDoc(p.uri) || !canWrite(p)) { failed++; continue }
                 val tree = PhoneOps.treeOf(p.uri)
@@ -925,6 +1017,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                 done.add(p.id)
             }
             withContext(Dispatchers.Main) {
+                if (gone > 0) toast(if (gone == 1) "Deleted" else "$gone PDFs deleted")
                 if (failed > 0) {
                     toast("Couldn't move $failed PDF" + (if (failed == 1) "" else "s") + " to the Trash. Open Settings and tap the folder to give Shelf edit access.")
                 }
@@ -996,7 +1089,11 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun saveProgress(id: Long, page: Int, count: Int) = viewModelScope.launch { dao.progress(id, page, count) }
+    fun saveProgress(id: Long, page: Int, count: Int) = viewModelScope.launch {
+        dao.progress(id, page, count)
+        if (count > 0 && page >= count - 1) dao.setDone(listOf(id), true)   // reached the last page: finished
+    }
+    fun saveZoom(id: Long, scale: Float, tx: Float) = viewModelScope.launch { dao.setZoom(id, scale, tx) }
     fun toggleBookmark(pdfId: Long, page: Int, existing: BookmarkEntity?) = viewModelScope.launch {
         if (existing != null) dao.deleteBookmark(existing.id) else dao.addBookmark(BookmarkEntity(pdfId = pdfId, page = page))
     }
@@ -1012,12 +1109,12 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                 f.forEach { a.put(JSONObject().put("id", it.id).put("name", it.name).put("parentId", it.parentId ?: JSONObject.NULL).put("color", it.color).put("pinned", it.pinned).put("sortIndex", it.sortIndex).put("favorite", it.favorite).put("removed", it.removed).put("link", it.link ?: JSONObject.NULL)) }
             })
             root.put("pdfs", JSONArray().also { a ->
-                p.filter { it.folderId != null || it.favorite || it.lastPage > 0 || it.label != null || it.hidden || it.pinned || it.sortIndex > 0 }.forEach {
+                p.filter { it.folderId != null || it.favorite || it.lastPage > 0 || it.label != null || it.hidden || it.pinned || it.sortIndex > 0 || it.done }.forEach {
                     a.put(JSONObject().put("uri", it.uri).put("name", it.name).put("size", it.size)
                         .put("folderId", it.folderId ?: JSONObject.NULL).put("favorite", it.favorite)
                         .put("lastPage", it.lastPage).put("pageCount", it.pageCount)
                         .put("label", it.label ?: JSONObject.NULL).put("hidden", it.hidden)
-                        .put("pinned", it.pinned).put("sortIndex", it.sortIndex))
+                        .put("pinned", it.pinned).put("sortIndex", it.sortIndex).put("done", it.done))
                 }
             })
             root.put("bookmarks", JSONArray().also { a ->
@@ -1063,6 +1160,7 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
                         if (o.isNull("label")) null else o.getString("label"), o.optBoolean("hidden", false),
                         o.optBoolean("pinned", false), o.optInt("sortIndex", 0)
                     )
+                    if (o.optBoolean("done", false)) dao.setDone(listOf(m.id), true)
                 }
                 for (i in 0 until ba.length()) {
                     val o = ba.getJSONObject(i)

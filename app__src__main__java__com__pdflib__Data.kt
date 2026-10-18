@@ -62,8 +62,29 @@ data class PdfEntity(
     /** When the file was moved to Shelf's Trash (0 = not in the trash). The file waits in a hidden folder on the phone. */
     @ColumnInfo(defaultValue = "0") val trashed: Long = 0,
     /** Where the file lived before it went to the Trash (a document id), so Restore can put it back. */
-    val origDir: String? = null
+    val origDir: String? = null,
+    /** Read to the end (or marked as read). Cleared by "Mark as unread". */
+    @ColumnInfo(defaultValue = "0") val done: Boolean = false,
+    /** The zoom the reader was left at, remembered per PDF: scale, and the horizontal shift as a fraction of the screen width. */
+    @ColumnInfo(defaultValue = "1") val zoom: Float = 1f,
+    @ColumnInfo(defaultValue = "0") val zoomTx: Float = 0f
 )
+
+/** Reading status shown on cards and used by the Library filter chips. */
+enum class ReadStatus { Unread, InProgress, Finished }
+
+fun PdfEntity.status(): ReadStatus = when {
+    done -> ReadStatus.Finished
+    lastPage > 0 -> ReadStatus.InProgress
+    else -> ReadStatus.Unread
+}
+
+/** 0..1 through the document (1 when finished). */
+fun PdfEntity.readFraction(): Float = when {
+    done -> 1f
+    pageCount > 1 -> (lastPage.toFloat() / (pageCount - 1)).coerceIn(0f, 1f)
+    else -> 0f
+}
 
 @Entity(
     tableName = "bookmarks",
@@ -113,6 +134,10 @@ interface LibDao {
     @Query("UPDATE folders SET sortIndex=:idx WHERE id=:id") suspend fun setFolderOrder(id: Long, idx: Int)
     @Query("UPDATE pdfs SET lastPage=:page, pageCount=:count WHERE id=:id") suspend fun progress(id: Long, page: Int, count: Int)
     @Query("UPDATE pdfs SET lastOpened=:t WHERE id=:id") suspend fun touch(id: Long, t: Long)
+    @Query("UPDATE pdfs SET done=:done WHERE id IN (:ids)") suspend fun setDone(ids: List<Long>, done: Boolean)
+    @Query("UPDATE pdfs SET done=0, lastPage=0 WHERE id IN (:ids)") suspend fun markUnread(ids: List<Long>)
+    @Query("UPDATE pdfs SET done=1, lastPage=MAX(lastPage, pageCount-1) WHERE id IN (:ids)") suspend fun markRead(ids: List<Long>)
+    @Query("UPDATE pdfs SET zoom=:z, zoomTx=:tx WHERE id=:id") suspend fun setZoom(id: Long, z: Float, tx: Float)
 
     @Query("UPDATE pdfs SET hidden=:h WHERE id IN (:ids)") suspend fun setHidden(ids: List<Long>, h: Boolean)
     @Query("UPDATE pdfs SET missing=:m WHERE id IN (:ids)") suspend fun setMissing(ids: List<Long>, m: Boolean)
@@ -136,7 +161,7 @@ interface LibDao {
     suspend fun restorePdf(id: Long, folder: Long?, fav: Boolean, page: Int, count: Int, label: String?, hidden: Boolean, pinned: Boolean, sortIndex: Int)
 }
 
-@Database(entities = [FolderEntity::class, PdfEntity::class, BookmarkEntity::class, LinkEntity::class], version = 7, exportSchema = false)
+@Database(entities = [FolderEntity::class, PdfEntity::class, BookmarkEntity::class, LinkEntity::class], version = 8, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): LibDao
 
@@ -144,7 +169,7 @@ abstract class AppDb : RoomDatabase() {
         @Volatile private var inst: AppDb? = null
         fun get(c: Context): AppDb = inst ?: synchronized(this) {
             inst ?: Room.databaseBuilder(c.applicationContext, AppDb::class.java, "library.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7) // never a destructive fallback: folders, stars and bookmarks must survive updates
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8) // never a destructive fallback: folders, stars and bookmarks must survive updates
                 .build().also { inst = it }
         }
     }
@@ -192,5 +217,15 @@ private val MIGRATION_6_7 = object : Migration(6, 7) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE pdfs ADD COLUMN trashed INTEGER NOT NULL DEFAULT 0")
         db.execSQL("ALTER TABLE pdfs ADD COLUMN origDir TEXT")
+    }
+}
+
+private val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE pdfs ADD COLUMN done INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE pdfs ADD COLUMN zoom REAL NOT NULL DEFAULT 1")
+        db.execSQL("ALTER TABLE pdfs ADD COLUMN zoomTx REAL NOT NULL DEFAULT 0")
+        // PDFs already read to the last page count as finished.
+        db.execSQL("UPDATE pdfs SET done=1 WHERE pageCount > 1 AND lastPage >= pageCount - 1")
     }
 }

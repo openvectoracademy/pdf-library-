@@ -25,6 +25,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextRange
@@ -141,7 +142,7 @@ class PickTree : ActivityResultContracts.OpenDocumentTree() {
         )
 }
 
-enum class PdfMenuAction { Pin, Rename, Move, Copy, Remove, Delete }
+enum class PdfMenuAction { Pin, Rename, Move, Copy, Remove, Delete, Share, OpenIn, Print, ToggleRead }
 
 sealed interface PdfDlg {
     class Rename(val pdf: PdfEntity) : PdfDlg
@@ -286,9 +287,10 @@ fun PdfGridCard(
     onMore: ((PdfMenuAction) -> Unit)?, modifier: Modifier = Modifier
 ) {
     val pal = LocalPal.current
-    val started = pdf.pageCount > 0 && pdf.lastPage > 0 && !pdf.missing
+    val finished = pdf.done && !pdf.missing
+    val started = (finished || (pdf.pageCount > 0 && pdf.lastPage > 0)) && !pdf.missing
     var menu by remember { mutableStateOf(false) }
-    val meta = if (pdf.missing) "File not found" else if (started) "p. ${pdf.lastPage + 1} of ${pdf.pageCount}" else formatSize(pdf.size)
+    val meta = if (pdf.missing) "File not found" else if (finished) "Finished" else if (started) "p. ${pdf.lastPage + 1} of ${pdf.pageCount}" else formatSize(pdf.size)
     Column(
         modifier.padding(horizontal = 4.dp, vertical = 6.dp).clip(RoundedCornerShape(16.dp))
             .background(if (selected) pal.accent.copy(alpha = 0.10f) else Color.Transparent)
@@ -318,7 +320,7 @@ fun PdfGridCard(
                 }
             }
             if (started) Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
-                ReadBar((pdf.lastPage + 1f) / pdf.pageCount)
+                ReadBar(pdf.readFraction(), done = finished)
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -335,12 +337,7 @@ fun PdfGridCard(
                 Box {
                     IconButton(onClick = { menu = true }, modifier = Modifier.size(28.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.soft, modifier = Modifier.size(18.dp)) }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text(if (pdf.pinned) "Unpin" else "Pin to top") }, onClick = { menu = false; onMore(PdfMenuAction.Pin) })
-                        DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onMore(PdfMenuAction.Rename) })
-                        DropdownMenuItem(text = { Text("Move to…") }, onClick = { menu = false; onMore(PdfMenuAction.Move) })
-                        DropdownMenuItem(text = { Text("Copy to…") }, onClick = { menu = false; onMore(PdfMenuAction.Copy) })
-                        DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { menu = false; onMore(PdfMenuAction.Remove) })
-                        DropdownMenuItem(text = { Text("Move to Trash", color = pal.accent) }, onClick = { menu = false; onMore(PdfMenuAction.Delete) })
+                        PdfMenuItems(pdf, { menu = false }, onMore)
                     }
                 }
             }
@@ -382,11 +379,43 @@ fun SortMenu(mode: Int, onPick: (Int) -> Unit) {
 }
 
 @Composable
-fun ReadBar(fraction: Float, modifier: Modifier = Modifier) {
+fun ReadBar(fraction: Float, modifier: Modifier = Modifier, done: Boolean = false) {
     val pal = LocalPal.current
     Box(modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)).background(pal.line)) {
-        Box(Modifier.fillMaxWidth(fraction.coerceIn(0f, 1f)).fillMaxHeight().background(pal.accent))
+        Box(Modifier.fillMaxWidth(fraction.coerceIn(0f, 1f)).fillMaxHeight().background(if (done) FinishedGreen else pal.accent))
     }
+}
+
+val FinishedGreen = Color(0xFF2E9E6B)
+
+/** The ⋮ menu of a PDF, grouped: send it elsewhere, reading status, then organising. */
+@Composable
+private fun PdfMenuItems(pdf: PdfEntity, close: () -> Unit, onMore: (PdfMenuAction) -> Unit) {
+    val pal = LocalPal.current
+    fun go(a: PdfMenuAction) { close(); onMore(a) }
+    val read = pdf.status() == ReadStatus.Finished
+    MenuItem("Share…", Icons.Rounded.Share) { go(PdfMenuAction.Share) }
+    MenuItem("Open with…", Icons.Rounded.OpenInNew) { go(PdfMenuAction.OpenIn) }
+    MenuItem("Print", Icons.Rounded.Print) { go(PdfMenuAction.Print) }
+    HorizontalDivider(color = pal.line)
+    MenuItem(if (read) "Mark as unread" else "Mark as read", if (read) Icons.Rounded.Replay else Icons.Rounded.TaskAlt) { go(PdfMenuAction.ToggleRead) }
+    MenuItem(if (pdf.pinned) "Unpin" else "Pin to top", Icons.Rounded.PushPin) { go(PdfMenuAction.Pin) }
+    HorizontalDivider(color = pal.line)
+    MenuItem("Rename", Icons.Rounded.Edit) { go(PdfMenuAction.Rename) }
+    MenuItem("Move to…", Icons.Rounded.DriveFileMove) { go(PdfMenuAction.Move) }
+    MenuItem("Copy to…", Icons.Rounded.ContentCopy) { go(PdfMenuAction.Copy) }
+    MenuItem("Remove from Shelf", Icons.Rounded.VisibilityOff) { go(PdfMenuAction.Remove) }
+    MenuItem("Move to Trash", Icons.Rounded.Delete, danger = true) { go(PdfMenuAction.Delete) }
+}
+
+@Composable
+fun MenuItem(label: String, icon: ImageVector, danger: Boolean = false, onClick: () -> Unit) {
+    val pal = LocalPal.current
+    DropdownMenuItem(
+        text = { Text(label, color = if (danger) pal.accent else pal.ink) },
+        leadingIcon = { Icon(icon, null, tint = if (danger) pal.accent else pal.soft, modifier = Modifier.size(20.dp)) },
+        onClick = onClick
+    )
 }
 
 /** Fixed slot sizes, so titles line up whatever the page shape is. */
@@ -429,11 +458,12 @@ fun PdfRow(
     modifier: Modifier = Modifier
 ) {
     val pal = LocalPal.current
-    val started = pdf.pageCount > 0 && pdf.lastPage > 0 && !pdf.missing
+    val finished = pdf.done && !pdf.missing
+    val started = (finished || (pdf.pageCount > 0 && pdf.lastPage > 0)) && !pdf.missing
     var menu by remember { mutableStateOf(false) }
     val meta = listOfNotNull(
         place, if (pdf.missing) "File not found" else formatSize(pdf.size),
-        if (started) "p. ${pdf.lastPage + 1} of ${pdf.pageCount}" else null
+        if (finished) "Finished" else if (started) "p. ${pdf.lastPage + 1} of ${pdf.pageCount}" else null
     ).joinToString(" · ")
     Row(
         modifier.fillMaxWidth()
@@ -451,7 +481,7 @@ fun PdfRow(
             }
             Spacer(Modifier.height(3.dp))
             Text(meta, fontSize = 12.sp, color = if (pdf.missing) pal.accent else pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (started) { Spacer(Modifier.height(7.dp)); ReadBar((pdf.lastPage + 1f) / pdf.pageCount, Modifier.padding(end = 12.dp)) }
+            if (started) { Spacer(Modifier.height(7.dp)); ReadBar(pdf.readFraction(), Modifier.padding(end = 12.dp), done = finished) }
         }
         if (selecting) {
             Box(Modifier.padding(horizontal = 12.dp).size(24.dp).clip(CircleShape)
@@ -471,12 +501,7 @@ fun PdfRow(
                 Box {
                     IconButton(onClick = { menu = true }, modifier = Modifier.size(40.dp)) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.soft) }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text(if (pdf.pinned) "Unpin" else "Pin to top") }, onClick = { menu = false; onMore(PdfMenuAction.Pin) })
-                        DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onMore(PdfMenuAction.Rename) })
-                        DropdownMenuItem(text = { Text("Move to…") }, onClick = { menu = false; onMore(PdfMenuAction.Move) })
-                        DropdownMenuItem(text = { Text("Copy to…") }, onClick = { menu = false; onMore(PdfMenuAction.Copy) })
-                        DropdownMenuItem(text = { Text("Remove from Shelf") }, onClick = { menu = false; onMore(PdfMenuAction.Remove) })
-                        DropdownMenuItem(text = { Text("Move to Trash", color = pal.accent) }, onClick = { menu = false; onMore(PdfMenuAction.Delete) })
+                        PdfMenuItems(pdf, { menu = false }, onMore)
                     }
                 }
             } else Spacer(Modifier.width(8.dp))

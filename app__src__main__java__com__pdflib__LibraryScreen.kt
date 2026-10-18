@@ -11,6 +11,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
+import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -76,7 +79,7 @@ fun LibraryScreen(vm: LibraryVm) {
         )
     }
     reorder.resolve = { key ->
-        if (vm.sortMode != SORT_CUSTOM) null
+        if (vm.sortMode != SORT_CUSTOM || vm.statusFilter != 0) null
         else if (key is Long) {
             val i = docs.indexOfFirst { it.id == key }
             if (i < 0) null else {
@@ -105,8 +108,15 @@ fun LibraryScreen(vm: LibraryVm) {
     }
     val shownSubs = reorder.arrange("f", subs) { "f${it.id}" }
     val shownDocs = reorder.arrange("p", docs) { it.id }
+    // Reading-status filter (All / Unread / In progress / Finished). Reordering is paused while it is on.
+    val counts = remember(docs) {
+        val c = IntArray(3)
+        docs.forEach { c[it.status().ordinal]++ }
+        c
+    }
+    val visibleDocs = if (vm.statusFilter == 0) shownDocs else shownDocs.filter { it.status().ordinal == vm.statusFilter - 1 }
     reorder.cols = { s -> if (s == "p") (if (vm.gridView) cols else 1) else (if (vm.foldersGrid) cols else 1) }
-    reorder.cellKey = { s, i -> if (s == "p") shownDocs.getOrNull(i)?.id else shownSubs.getOrNull(i)?.let { "f${it.id}" } }
+    reorder.cellKey = { s, i -> if (s == "p") visibleDocs.getOrNull(i)?.id else shownSubs.getOrNull(i)?.let { "f${it.id}" } }
     LaunchedEffect(subs, docs) {
         reorder.onSource("f", subs.map { "f${it.id}" })
         reorder.onSource("p", docs.map { it.id })
@@ -303,14 +313,28 @@ fun LibraryScreen(vm: LibraryVm) {
                         item(key = "pl") {
                             val label = if (current == null && subs.isNotEmpty()) "Unsorted" else "PDFs"
                             Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Overline("$label · ${docs.size}", Modifier.weight(1f))
+                                Overline(if (vm.statusFilter == 0) "$label · ${docs.size}" else "$label · ${visibleDocs.size} of ${docs.size}", Modifier.weight(1f))
                                 if (docs.size > 1) SortMenu(sortMode) { vm.updateSort(it) }
                                 Spacer(Modifier.width(6.dp))
                                 ViewToggle(vm.gridView) { vm.updateGrid(it) }
                             }
                         }
+                        if (docs.size >= 2) item(key = "chips") {
+                            StatusChips(vm.statusFilter, docs.size, counts) { vm.statusFilter = it }
+                        }
+                        if (visibleDocs.isEmpty()) item(key = "nomatch") {
+                            Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    when (vm.statusFilter) { 1 -> "Nothing unread here"; 2 -> "Nothing in progress here"; else -> "Nothing finished here yet" },
+                                    fontFamily = Serif, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = pal.ink
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Text("Try another filter to see the rest of this folder.", fontSize = 13.sp, color = pal.soft)
+                                TextButton(onClick = { vm.statusFilter = 0 }) { Text("Show all", color = pal.accent, fontWeight = FontWeight.SemiBold) }
+                            }
+                        }
                         if (vm.gridView) {
-                            val prows = shownDocs.chunked(cols)
+                            val prows = visibleDocs.chunked(cols)
                             items(prows.size, key = { gridRowKey("p", it) }) { ri ->
                                 val rowItems = prows.getOrNull(ri) ?: return@items
                                 Row(
@@ -334,7 +358,7 @@ fun LibraryScreen(vm: LibraryVm) {
                                 }
                             }
                         } else {
-                            items(shownDocs, key = { it.id }) { p ->
+                            items(visibleDocs, key = { it.id }) { p ->
                                 PdfRow(p, null, selecting, p.id in vm.selection,
                                     onClick = { if (selecting) vm.toggleSel(p.id) else vm.openReader(p.id) },
                                     onFav = { vm.setFavorite(listOf(p.id), !p.favorite) },
@@ -466,6 +490,35 @@ private fun ResumeCard(p: PdfEntity, place: String?, onClick: () -> Unit) {
         Spacer(Modifier.width(14.dp))
         Box(Modifier.size(44.dp).clip(CircleShape).background(pal.accent), contentAlignment = Alignment.Center) {
             Icon(Icons.Rounded.PlayArrow, "Resume", tint = Color.White)
+        }
+    }
+}
+
+
+/** All / Unread / In progress / Finished, with how many PDFs of this folder are in each. */
+@Composable
+private fun StatusChips(selected: Int, total: Int, counts: IntArray, onSelect: (Int) -> Unit) {
+    val pal = LocalPal.current
+    val labels = listOf("All" to total, "Unread" to counts[0], "In progress" to counts[1], "Finished" to counts[2])
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        labels.forEachIndexed { i, (label, n) ->
+            val on = i == selected
+            val dim = i != 0 && n == 0 && !on
+            Row(
+                Modifier.clip(RoundedCornerShape(50))
+                    .background(if (on) pal.ink else Color.Transparent)
+                    .border(1.dp, if (on) pal.ink else pal.line, RoundedCornerShape(50))
+                    .clickable { onSelect(if (on) 0 else i) }
+                    .padding(horizontal = 14.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(label, fontSize = 13.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium, color = if (on) pal.bg else if (dim) pal.soft.copy(alpha = 0.55f) else pal.ink)
+                Spacer(Modifier.width(6.dp))
+                Text("$n", fontSize = 12.sp, color = if (on) pal.bg.copy(alpha = 0.7f) else pal.soft)
+            }
         }
     }
 }

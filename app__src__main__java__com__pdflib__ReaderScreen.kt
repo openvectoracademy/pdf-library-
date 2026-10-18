@@ -1,8 +1,15 @@
-@file:OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
+@file:OptIn(ExperimentalMaterial3Api::class, FlowPreview::class, ExperimentalFoundationApi::class)
 
 package com.pdflib
 
 import android.content.Context
+import android.content.pm.ActivityInfo
+import android.view.WindowManager
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.ui.unit.Dp
+import kotlinx.coroutines.flow.first
 import androidx.compose.foundation.shape.RoundedCornerShape
 import android.content.Intent
 import android.graphics.Bitmap
@@ -104,6 +111,8 @@ fun ReaderScreen(vm: LibraryVm, pdfId: Long) {
     val pdf = pdfs.firstOrNull { it.id == pdfId }
     val title = remember(pdfId) { pdf?.title() ?: "" }
     val startPage = remember(pdfId) { pdf?.lastPage ?: 0 }
+    val startZoom = remember(pdfId) { pdf?.zoom ?: 1f }
+    val startTx = remember(pdfId) { pdf?.zoomTx ?: 0f }
 
     var doc by remember(pdfId) { mutableStateOf<PdfDoc?>(null) }
     var firstRatio by remember(pdfId) { mutableStateOf(1.414f) }
@@ -114,7 +123,21 @@ fun ReaderScreen(vm: LibraryVm, pdfId: Long) {
     val holder = remember(pdfId) { arrayOfNulls<PdfDoc>(1) }
 
     BackHandler { vm.closeReader() }
-    DisposableEffect(Unit) { view.keepScreenOn = true; onDispose { view.keepScreenOn = false } }
+    // Reading comfort: screen on, brightness and orientation apply only while a PDF is open.
+    val activity = remember(ctx) { ctx.findActivity() }
+    DisposableEffect(vm.keepOn) { view.keepScreenOn = vm.keepOn; onDispose { view.keepScreenOn = false } }
+    DisposableEffect(vm.brightness) {
+        activity?.window?.let { w -> w.attributes = w.attributes.also { it.screenBrightness = if (vm.brightness < 0f) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE else vm.brightness } }
+        onDispose { activity?.window?.let { w -> w.attributes = w.attributes.also { it.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE } } }
+    }
+    DisposableEffect(vm.orient) {
+        activity?.requestedOrientation = when (vm.orient) {
+            1 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            2 -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+        onDispose { activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
+    }
     LaunchedEffect(pdfId, retry) {
         failed = false
         // Always use the file's current address: a rescan may have just followed a rename.
@@ -150,24 +173,33 @@ fun ReaderScreen(vm: LibraryVm, pdfId: Long) {
             d == null -> Box(Modifier.fillMaxSize().background(pal.bg), contentAlignment = Alignment.Center) {
                 Text(if (searching) "Looking for this file…" else "Opening…", color = pal.soft, fontSize = 14.sp)
             }
-            else -> Reading(vm, pdfId, title, d, firstRatio, startPage, readerBg)
+            else -> Reading(vm, pdfId, title, d, firstRatio, startPage, readerBg, startZoom, startTx)
         }
     }
 }
 
 @Composable
-private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firstRatio: Float, startPage: Int, readerBg: Color) {
+private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firstRatio: Float, startPage: Int, readerBg: Color, startZoom: Float, startTx: Float) {
     val pal = LocalPal.current
     val count = doc.pageCount
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = startPage.coerceIn(0, count - 1))
     val zoom = remember { ZoomState(listState) }
+    val paged = vm.pageMode
+    val pagerState = rememberPagerState(initialPage = startPage.coerceIn(0, count - 1)) { count }
+    var pos by remember { mutableIntStateOf(startPage.coerceIn(0, count - 1)) }
     var chrome by remember { mutableStateOf(true) }
+    var settings by remember { mutableStateOf(false) }
+    var more by remember { mutableStateOf(false) }
+    val goTo: suspend (Int) -> Unit = { p ->
+        val t = p.coerceIn(0, count - 1)
+        if (paged) pagerState.scrollToPage(t) else listState.scrollToItem(t)
+    }
     // Page-number badge: shows while the list is moving, and for a moment after a tap; fades away 1 s after things go still.
     var badge by remember { mutableStateOf(false) }
     var badgeTap by remember { mutableIntStateOf(0) }
     var dragP by remember { mutableStateOf<Float?>(null) }   // set while the badge itself is being dragged
-    val moving = listState.isScrollInProgress || dragP != null
+    val moving = listState.isScrollInProgress || pagerState.isScrollInProgress || dragP != null
     LaunchedEffect(moving, badgeTap) {
         if (moving) badge = true
         else if (badge || badgeTap > 0) { badge = true; delay(1000); badge = false }
@@ -189,12 +221,32 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
         }
     }
 
-    val current by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-    LaunchedEffect(listState) {
-        snapshotFlow { listState.firstVisibleItemIndex }.debounce(700).collect { vm.saveProgress(pdfId, it, count) }
+    val current by remember(paged) { derivedStateOf { if (paged) pagerState.currentPage else listState.firstVisibleItemIndex } }
+    val latestCurrent = rememberUpdatedState(current)
+    val latestPaged = rememberUpdatedState(paged)
+    // Switching between Scroll and Pages keeps you on the same page.
+    LaunchedEffect(paged) {
+        goTo(pos)
+        snapshotFlow { if (paged) pagerState.currentPage else listState.firstVisibleItemIndex }.collect { pos = it }
     }
-    DisposableEffect(Unit) { onDispose { vm.saveProgress(pdfId, listState.firstVisibleItemIndex, count) } }
+    LaunchedEffect(paged) {
+        snapshotFlow { if (paged) pagerState.currentPage else listState.firstVisibleItemIndex }.debounce(700).collect { vm.saveProgress(pdfId, it, count) }
+    }
+    DisposableEffect(Unit) { onDispose { vm.saveProgress(pdfId, latestCurrent.value, count) } }
     LaunchedEffect(listState) { listState.interactionSource.interactions.collect { if (it is DragInteraction.Start) chrome = false } }
+    LaunchedEffect(pagerState) { snapshotFlow { pagerState.isScrollInProgress }.collect { if (it) chrome = false } }
+
+    // The zoom you left a PDF at is remembered for that PDF (scroll layout).
+    LaunchedEffect(zoom) {
+        if (startZoom > 1.02f) {
+            snapshotFlow { zoom.viewW }.first { it > 0f }
+            zoom.restore(startZoom, startTx)
+        }
+    }
+    LaunchedEffect(zoom, paged) {
+        if (!paged) snapshotFlow { zoom.scale to zoom.tx }.debounce(900).collect { (sc, t) -> if (zoom.viewW > 0f) vm.saveZoom(pdfId, sc, t / zoom.viewW) }
+    }
+    DisposableEffect(Unit) { onDispose { if (!latestPaged.value && zoom.viewW > 0f) vm.saveZoom(pdfId, zoom.scale, zoom.tx / zoom.viewW) } }
 
     val allBm by vm.bookmarks.collectAsState()
     val bms = remember(allBm, pdfId) { allBm.filter { it.pdfId == pdfId } }
@@ -255,7 +307,12 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
         val bottomDp = with(density) { bottomInset.toDp() }
         val baseW = viewWpx.toInt().coerceAtLeast(1)
 
-        Box(
+        if (paged) PagedPages(
+            doc, count, ratios, pagerState, invert,
+            topInsetDp = with(density) { topInset.toDp() }, bottomInsetDp = bottomDp, chrome = chrome,
+            onTap = { chrome = !chrome; badgeTap++ },
+            onZoomed = { z -> if (z) chrome = false }
+        ) else Box(
             Modifier.fillMaxSize().padding(top = topDp, bottom = bottomDp).clipToBounds()
                 .pointerInput(Unit) {
                     val slop = viewConfig.touchSlop
@@ -333,11 +390,15 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
         // The badge rides the right edge and follows your position in the document, like a scroll thumb.
         val badgeH = with(density) { 40.dp.toPx() }
         val badgeMargin = with(density) { 8.dp.toPx() }
-        val progress by remember {
+        val progress by remember(paged) {
             derivedStateOf {
-                val first = listState.layoutInfo.visibleItemsInfo.firstOrNull()
-                val frac = if (first != null && first.size > 0) (-first.offset.toFloat() / first.size).coerceIn(0f, 1f) else 0f
-                if (count > 1) ((listState.firstVisibleItemIndex + frac) / (count - 1)).coerceIn(0f, 1f) else 0f
+                if (paged) {
+                    if (count > 1) ((pagerState.currentPage + pagerState.currentPageOffsetFraction) / (count - 1)).coerceIn(0f, 1f) else 0f
+                } else {
+                    val first = listState.layoutInfo.visibleItemsInfo.firstOrNull()
+                    val frac = if (first != null && first.size > 0) (-first.offset.toFloat() / first.size).coerceIn(0f, 1f) else 0f
+                    if (count > 1) ((listState.firstVisibleItemIndex + frac) / (count - 1)).coerceIn(0f, 1f) else 0f
+                }
             }
         }
         val trackLo = topPadPx + badgeMargin
@@ -366,7 +427,7 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
                                 val p = ((dragP ?: progress) + dy / track).coerceIn(0f, 1f)
                                 dragP = p
                                 val page = (p * (count - 1)).roundToInt().coerceIn(0, count - 1)
-                                if (page != listState.firstVisibleItemIndex) scope.launch { listState.scrollToItem(page) }
+                                if (page != current) scope.launch { goTo(page) }
                             }
                         )
                     }
@@ -388,8 +449,19 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
                 IconButton(onClick = { vm.toggleBookmark(pdfId, current, here) }) {
                     Icon(if (here != null) Icons.Rounded.Bookmark else Icons.Rounded.BookmarkBorder, "Bookmark page", tint = if (here != null) pal.accent else pal.ink)
                 }
-                IconButton(onClick = { sheet = true }) { Icon(Icons.Rounded.FormatListBulleted, "Bookmarks", tint = pal.ink) }
-                IconButton(onClick = { vm.updateInvert(!invert) }) { Icon(Icons.Rounded.InvertColors, "Night reading", tint = if (invert) pal.accent else pal.ink) }
+                IconButton(onClick = { settings = true }) { Icon(Icons.Rounded.Tune, "Reading settings", tint = if (invert || paged) pal.accent else pal.ink) }
+                Box {
+                    IconButton(onClick = { more = true }) { Icon(Icons.Rounded.MoreVert, "More", tint = pal.ink) }
+                    DropdownMenu(expanded = more, onDismissRequest = { more = false }) {
+                        val me = { vm.pdfs.value.firstOrNull { it.id == pdfId } }
+                        MenuItem("Bookmarks", Icons.Rounded.FormatListBulleted) { more = false; sheet = true }
+                        MenuItem("Go to page…", Icons.Rounded.Tag) { more = false; jump = true }
+                        HorizontalDivider(color = pal.line)
+                        MenuItem("Share…", Icons.Rounded.Share) { more = false; me()?.let { vm.shareReq = ShareReq(it, ShareKind.Share) } }
+                        MenuItem("Open with…", Icons.Rounded.OpenInNew) { more = false; me()?.let { vm.shareReq = ShareReq(it, ShareKind.OpenIn) } }
+                        MenuItem("Print", Icons.Rounded.Print) { more = false; me()?.let { vm.shareReq = ShareReq(it, ShareKind.Print) } }
+                    }
+                }
             }
         }
 
@@ -401,11 +473,61 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
                 Text("${current + 1}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = pal.ink,
                     modifier = Modifier.clickable { jump = true }.padding(horizontal = 8.dp, vertical = 8.dp))
                 Slider(
-                    value = current.toFloat(), onValueChange = { v -> scope.launch { listState.scrollToItem(v.roundToInt().coerceIn(0, count - 1)) } },
+                    value = current.toFloat(), onValueChange = { v -> scope.launch { goTo(v.roundToInt().coerceIn(0, count - 1)) } },
                     valueRange = 0f..(count - 1).coerceAtLeast(1).toFloat(), modifier = Modifier.weight(1f),
                     colors = SliderDefaults.colors(thumbColor = pal.accent, activeTrackColor = pal.accent, inactiveTrackColor = pal.line)
                 )
                 Text("$count", fontSize = 13.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 8.dp))
+            }
+        }
+    }
+
+    if (settings) ModalBottomSheet(onDismissRequest = { settings = false }, containerColor = pal.surface) {
+        val auto = vm.brightness < 0f
+        Column(Modifier.navigationBarsPadding().padding(horizontal = 20.dp).padding(bottom = 20.dp).verticalScroll(rememberScrollState())) {
+            Text("Reading settings", fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = pal.ink, modifier = Modifier.padding(bottom = 14.dp))
+
+            SettingLabel("Page layout")
+            Segmented(listOf("Scroll", "Pages"), if (paged) 1 else 0) { vm.updatePageMode(it == 1) }
+            Text(
+                if (paged) "Swipe sideways, one page at a time. Double-tap to zoom." else "Keep scrolling down through the whole document.",
+                fontSize = 12.sp, color = pal.soft, modifier = Modifier.padding(top = 6.dp)
+            )
+
+            SettingLabel("Appearance")
+            SettingSwitch("Night reading", "Dark pages for reading in the dark", invert) { vm.updateInvert(it) }
+
+            SettingLabel("Brightness")
+            SettingSwitch("Automatic", "Follow your phone's brightness", auto) { vm.updateBrightness(if (it) -1f else 0.6f) }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.BrightnessLow, null, tint = pal.soft, modifier = Modifier.size(20.dp))
+                Slider(
+                    value = if (auto) 0.6f else vm.brightness.coerceIn(0.05f, 1f), onValueChange = { vm.updateBrightness(it.coerceIn(0.05f, 1f)) },
+                    valueRange = 0.05f..1f, enabled = !auto, modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                    colors = SliderDefaults.colors(thumbColor = pal.accent, activeTrackColor = pal.accent, inactiveTrackColor = pal.line)
+                )
+                Icon(Icons.Rounded.BrightnessHigh, null, tint = pal.soft, modifier = Modifier.size(20.dp))
+            }
+
+            SettingLabel("Screen")
+            SettingSwitch("Keep screen on", "Stops the screen from turning off while you read", vm.keepOn) { vm.updateKeepOn(it) }
+            Text("Orientation", fontSize = 14.sp, color = pal.ink, modifier = Modifier.padding(top = 10.dp, bottom = 8.dp))
+            Segmented(listOf("Auto", "Portrait", "Landscape"), vm.orient) { vm.updateOrient(it) }
+
+            if (!paged) {
+                SettingLabel("Zoom")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = { zoom.animateTo(scope, 1f, Offset(zoom.viewW / 2f, zoom.areaH / 2f)); settings = false },
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Rounded.FitScreen, null, tint = pal.ink, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Fit to width", color = pal.ink)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Text("Your zoom is remembered for each PDF.", fontSize = 12.sp, color = pal.soft, modifier = Modifier.weight(1f))
+                }
             }
         }
     }
@@ -415,7 +537,7 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
             Text("Bookmarks", fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = pal.ink, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
             if (bms.isEmpty()) Text("Tap the bookmark icon at the top to mark a page.", fontSize = 14.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
             bms.forEach { b ->
-                Row(Modifier.fillMaxWidth().clickable { scope.launch { listState.scrollToItem(b.page.coerceIn(0, count - 1)) }; sheet = false }.padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().clickable { scope.launch { goTo(b.page.coerceIn(0, count - 1)) }; sheet = false }.padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Rounded.Bookmark, null, tint = pal.accent, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(14.dp))
                     Text("Page ${b.page + 1}", Modifier.weight(1f).padding(vertical = 14.dp), fontSize = 15.sp, color = pal.ink)
@@ -436,7 +558,7 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
             },
             confirmButton = {
                 TextButton(onClick = {
-                    txt.toIntOrNull()?.let { n -> scope.launch { listState.scrollToItem((n - 1).coerceIn(0, count - 1)) } }
+                    txt.toIntOrNull()?.let { n -> scope.launch { goTo((n - 1).coerceIn(0, count - 1)) } }
                     jump = false
                 }) { Text("Go") }
             },
@@ -482,6 +604,12 @@ class ZoomState(private val list: LazyListState) {
         val dy = from.y / s0 - to.y / s1
         scale = s1; tx = nx
         if (abs(dy) > 0.01f) list.dispatchRawDelta(dy)
+    }
+
+    /** Puts back a remembered zoom: [s] is the scale, [txFrac] the horizontal shift as a fraction of the screen width. */
+    fun restore(s: Float, txFrac: Float) {
+        scale = s.coerceIn(1f, MAX_SCALE)
+        tx = (txFrac * viewW).coerceIn(minTx(scale), 0f)
     }
 
     fun panX(dx: Float) { tx = (tx + dx).coerceIn(minTx(scale), 0f) }
@@ -534,6 +662,190 @@ private fun PageView(doc: PdfDoc, index: Int, ratio: Float, baseWidthPx: Int, ov
                 val w = ((tile.r - tile.l) * size.width).roundToInt().coerceAtLeast(1)
                 val h = ((tile.b - tile.t) * size.height).roundToInt().coerceAtLeast(1)
                 drawImage(img, dstOffset = IntOffset(x, y), dstSize = IntSize(w, h), colorFilter = if (invert) InvertFilter else null)
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun SettingLabel(text: String) {
+    val pal = LocalPal.current
+    Text(text.uppercase(), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp, color = pal.soft, modifier = Modifier.padding(top = 20.dp, bottom = 8.dp))
+}
+
+@Composable
+private fun SettingSwitch(title: String, sub: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    val pal = LocalPal.current
+    Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 15.sp, color = pal.ink)
+            Text(sub, fontSize = 12.sp, color = pal.soft)
+        }
+        Switch(
+            checked = checked, onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(checkedTrackColor = pal.accent, checkedThumbColor = Color.White, uncheckedTrackColor = pal.line, uncheckedBorderColor = pal.line)
+        )
+    }
+}
+
+/** A small segmented control: one option is always selected. */
+@Composable
+private fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    val pal = LocalPal.current
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(pal.line.copy(alpha = 0.5f)).padding(3.dp)) {
+        options.forEachIndexed { i, label ->
+            val on = i == selected
+            Box(
+                Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(if (on) pal.accent else Color.Transparent)
+                    .clickable { onSelect(i) }.padding(vertical = 9.dp),
+                contentAlignment = Alignment.Center
+            ) { Text(label, fontSize = 14.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium, color = if (on) Color.White else pal.ink) }
+        }
+    }
+}
+
+/** "Pages" layout: one page per screen, swipe sideways. Pinch or double-tap to zoom a page; swiping resumes once you zoom back out. */
+@Composable
+private fun PagedPages(
+    doc: PdfDoc, count: Int, ratios: List<Float>, pagerState: PagerState, invert: Boolean,
+    topInsetDp: Dp, bottomInsetDp: Dp, chrome: Boolean, onTap: () -> Unit, onZoomed: (Boolean) -> Unit
+) {
+    var zoomed by remember { mutableStateOf(false) }
+    HorizontalPager(
+        state = pagerState,
+        modifier = Modifier.fillMaxSize().padding(top = topInsetDp, bottom = bottomInsetDp),
+        userScrollEnabled = !zoomed,
+        pageSpacing = 12.dp,
+        key = { it }
+    ) { page ->
+        PagerPage(
+            doc, page, ratios.getOrElse(page) { 1.414f }, invert, chrome, pagerState.currentPage == page, onTap,
+            onZoomed = { z -> zoomed = z; onZoomed(z) }
+        )
+    }
+}
+
+@Composable
+private fun PagerPage(doc: PdfDoc, page: Int, ratio: Float, invert: Boolean, chrome: Boolean, active: Boolean, onTap: () -> Unit, onZoomed: (Boolean) -> Unit) {
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    BoxWithConstraints(Modifier.fillMaxSize().clipToBounds()) {
+        val areaW = constraints.maxWidth.toFloat()
+        val areaH = constraints.maxHeight.toFloat()
+        val barPx = with(density) { 56.dp.toPx() }
+        // The whole page is always visible: it fits the screen (width or height, whichever is tighter).
+        val fw = minOf(areaW, areaH / ratio).coerceAtLeast(1f)
+        val fh = fw * ratio
+        var scale by remember { mutableFloatStateOf(1f) }
+        var tx by remember { mutableFloatStateOf(0f) }
+        var ty by remember { mutableFloatStateOf(0f) }
+        var tile by remember { mutableStateOf<PageTile?>(null) }
+        // With the bars showing, the page shrinks a little so it sits between them (a smooth transform: nothing is re-rendered).
+        val k by animateFloatAsState(
+            if (chrome && scale <= 1.001f) minOf(1f, ((areaH - 2f * barPx) / fh).coerceAtLeast(0.4f)) else 1f,
+            tween(180), label = "fitK"
+        )
+
+        fun clampT() {
+            val mx = ((fw * scale - areaW) / 2f).coerceAtLeast(0f)
+            val my = ((fh * scale - areaH) / 2f).coerceAtLeast(0f)
+            tx = tx.coerceIn(-mx, mx); ty = ty.coerceIn(-my, my)
+        }
+
+        fun zoomTo(target: Float, focal: Offset) {
+            val cx = areaW / 2f; val cy = areaH / 2f
+            val s0 = scale
+            val qx = (focal.x - cx - tx) / s0; val qy = (focal.y - cy - ty) / s0
+            scope.launch {
+                animate(s0, target, animationSpec = tween(280, easing = FastOutSlowInEasing)) { v, _ ->
+                    scale = v
+                    tx = focal.x - cx - qx * v
+                    ty = focal.y - cy - qy * v
+                    clampT()
+                }
+            }
+        }
+
+        LaunchedEffect(active) { if (!active && scale != 1f) { scale = 1f; tx = 0f; ty = 0f; tile = null } }
+        LaunchedEffect(scale > 1.001f, active) { if (active) onZoomed(scale > 1.001f) }
+        // Zoomed in: the visible part is re-rendered at full density so text stays sharp.
+        LaunchedEffect(doc, page, active, fw, fh, areaW, areaH) {
+            snapshotFlow { Triple(scale, tx, ty) }.debounce(170).collectLatest { (s, x, y) ->
+                if (s <= TILE_FROM || !active) { tile = null; return@collectLatest }
+                val lx0 = ((-areaW / 2f - x) / s + fw / 2f).coerceIn(0f, fw)
+                val lx1 = ((areaW / 2f - x) / s + fw / 2f).coerceIn(0f, fw)
+                val ly0 = ((-areaH / 2f - y) / s + fh / 2f).coerceIn(0f, fh)
+                val ly1 = ((areaH / 2f - y) / s + fh / 2f).coerceIn(0f, fh)
+                if (lx1 - lx0 < 8f || ly1 - ly0 < 8f) return@collectLatest
+                val mx = (lx1 - lx0) * 0.15f; val my = (ly1 - ly0) * 0.15f
+                val l = ((lx0 - mx) / fw).coerceIn(0f, 1f); val r = ((lx1 + mx) / fw).coerceIn(0f, 1f)
+                val t = ((ly0 - my) / fh).coerceIn(0f, 1f); val b = ((ly1 + my) / fh).coerceIn(0f, 1f)
+                val have = tile
+                if (have != null && have.covers(l, t, r, b) && have.scale >= s * 0.9f) return@collectLatest
+                val bmp = doc.renderRegion(page, fw * s, l, t, r, b, 5_000_000) ?: return@collectLatest
+                tile = PageTile(bmp, l, t, r, b, s)
+            }
+        }
+
+        Box(
+            Modifier.fillMaxSize()
+                .pointerInput(fw, fh, areaW, areaH) {
+                    val slop = viewConfiguration.touchSlop
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        var pinching = false
+                        var panning = false
+                        var travelled = 0f
+                        do {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val pressed = event.changes.count { it.pressed }
+                            if (pressed >= 2) {
+                                pinching = true
+                                val zr = event.calculateZoom()
+                                val pan = event.calculatePan()
+                                val c = event.calculateCentroid(useCurrent = false)
+                                if ((zr != 1f || pan != Offset.Zero) && c != Offset.Unspecified) {
+                                    val s0 = scale
+                                    val s1 = (s0 * zr).coerceIn(1f, ZoomState.MAX_SCALE)
+                                    val cx = size.width / 2f; val cy = size.height / 2f
+                                    val qx = (c.x - cx - tx) / s0; val qy = (c.y - cy - ty) / s0
+                                    scale = s1
+                                    tx = c.x + pan.x - cx - qx * s1
+                                    ty = c.y + pan.y - cy - qy * s1
+                                    clampT()
+                                }
+                                event.changes.forEach { it.consume() }
+                            } else if (pinching) {
+                                event.changes.forEach { it.consume() }
+                            } else if (scale > 1.001f) {
+                                val pan = event.calculatePan()
+                                travelled += abs(pan.x) + abs(pan.y)
+                                if (!panning && travelled > slop) panning = true
+                                if (panning) {
+                                    tx += pan.x; ty += pan.y; clampT()
+                                    event.changes.forEach { it.consume() }
+                                }
+                            }
+                        } while (event.changes.any { it.pressed })
+                    }
+                }
+                .pointerInput(fw, fh, areaW, areaH) {
+                    detectTapGestures(
+                        onTap = { onTap() },
+                        onDoubleTap = { p -> zoomTo(if (scale > 1.25f) 1f else DOUBLE_TAP_ZOOM, p) }
+                    )
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                Modifier.size(with(density) { fw.toDp() }, with(density) { fh.toDp() })
+                    .graphicsLayer {
+                        scaleX = scale * k; scaleY = scale * k
+                        translationX = tx; translationY = ty
+                    }
+            ) {
+                PageView(doc, page, ratio, fw.toInt().coerceAtLeast(1), if (active) 2f else 1f, invert, tile)
             }
         }
     }

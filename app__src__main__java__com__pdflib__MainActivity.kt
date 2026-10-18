@@ -1,6 +1,7 @@
 package com.pdflib
 
 import android.graphics.Color as AColor
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
@@ -15,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -23,6 +25,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -39,9 +43,18 @@ class MainActivity : ComponentActivity() {
         shelf.onForeground()
     }
 
+    /** A PDF sent to Shelf while it is already open ("Open with" / "Share"). */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        shelf.handleIntent(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Only on a fresh start: a recreated activity (e.g. after a theme change) must not import the same file twice.
+        if (savedInstanceState == null) shelf.handleIntent(intent)
         setContent {
             val vm: LibraryVm = viewModel()
             val dark = isDarkFor(vm.themeMode)
@@ -68,6 +81,13 @@ private fun Root(vm: LibraryVm = viewModel()) {
     val libFolders by vm.folders.collectAsState()
     val savedFolders = remember(libFolders) { libFolders.filter { it.favorite }.sortedBy { it.name.lowercase() } }
 
+    // Share / Open with… / Print asked for from a menu: carried out with the screen's Activity so the system sheets look right.
+    val host = LocalContext.current
+    val req = vm.shareReq
+    LaunchedEffect(req) {
+        if (req != null) { vm.shareReq = null; ShareTools.run(host, req) }
+    }
+
     // From Recent, Saved or Settings, Back goes to the Library before it leaves the app.
     BackHandler(enabled = vm.tab != 0) { vm.tab = 0 }
 
@@ -87,6 +107,21 @@ private fun Root(vm: LibraryVm = viewModel()) {
         vm.readerId?.let { ReaderScreen(vm, it) }
         PdfDialogHost(vm)
         vm.undo?.let { UndoBar(vm, it, Modifier.align(Alignment.BottomCenter)) }
+        if (vm.importing) {
+            Box(
+                Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f)).pointerInput(Unit) { detectTapGestures { } },
+                contentAlignment = Alignment.Center
+            ) {
+                Row(
+                    Modifier.clip(RoundedCornerShape(18.dp)).background(pal.surface).padding(horizontal = 22.dp, vertical = 18.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(Modifier.size(22.dp), color = pal.accent, strokeWidth = 2.5.dp)
+                    Spacer(Modifier.width(14.dp))
+                    Text("Adding to your Library…", color = pal.ink, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+        }
         if (showSplash) Splash(ready = vm.loaded) { showSplash = false }
     }
 }
