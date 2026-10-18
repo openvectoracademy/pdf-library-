@@ -4,6 +4,8 @@ package com.pdflib
 
 import android.content.Context
 import android.content.pm.ActivityInfo
+import android.os.SystemClock
+import android.view.HapticFeedbackConstants
 import android.view.WindowManager
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerState
@@ -50,6 +52,9 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -59,7 +64,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.ColorFilter
@@ -252,6 +259,94 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
     val allBm by vm.bookmarks.collectAsState()
     val bms = remember(allBm, pdfId) { allBm.filter { it.pdfId == pdfId } }
     val here = bms.firstOrNull { it.page == current }
+
+    // ---- the smart bottom bar: bookmarks on the track, a live page preview, time left at YOUR pace,
+    // a way back after a long jump, an all-pages overview and a focus timer.
+    val marks = remember(bms) { bms.map { it.page }.distinct().sorted() }
+    var backTo by remember { mutableStateOf<Int?>(null) }
+    var lastBack by remember { mutableIntStateOf(0) }
+    LaunchedEffect(backTo) { val b = backTo; if (b != null) { lastBack = b; delay(7000); backTo = null } }
+    val jumpTo: (Int) -> Unit = { p ->
+        val t = p.coerceIn(0, count - 1)
+        if (abs(t - latestCurrent.value) >= 3) backTo = latestCurrent.value
+        scope.launch { goTo(t) }
+    }
+    var scrubbing by remember { mutableStateOf(false) }
+    var scrubFrac by remember { mutableFloatStateOf(0f) }
+    var scrubPage by remember { mutableIntStateOf(0) }
+    var scrubFrom by remember { mutableIntStateOf(0) }
+    var scrubThumb by remember { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(scrubPage, scrubbing) {
+        if (scrubbing) { delay(50); doc.render(scrubPage, 260)?.let { scrubThumb = it } } else scrubThumb = null
+    }
+    var overview by remember { mutableStateOf(false) }
+
+    // Your pace: how long you really stay on a page, from the pages you turned one by one this session.
+    val samples = remember { mutableStateListOf<Float>() }
+    LaunchedEffect(Unit) {
+        var prev = latestCurrent.value
+        var t0 = SystemClock.elapsedRealtime()
+        snapshotFlow { latestCurrent.value }.collect { p ->
+            val now = SystemClock.elapsedRealtime()
+            if (p == prev + 1) {
+                val dwell = (now - t0) / 1000f
+                if (dwell in 4f..240f) { samples.add(dwell); if (samples.size > 15) samples.removeAt(0) }
+            }
+            prev = p
+            t0 = now
+        }
+    }
+    val pace: Float = if (samples.size >= 3) samples.sorted()[samples.size / 2] else vm.paceSec
+    DisposableEffect(Unit) {
+        onDispose {
+            if (samples.size >= 5) {
+                val m = samples.sorted()[samples.size / 2]
+                vm.updatePace(if (vm.paceSec > 0f) 0.6f * vm.paceSec + 0.4f * m else m)
+            }
+        }
+    }
+    val pagesLeft = (count - 1 - current).coerceAtLeast(0)
+    val pct = if (count > 1) (current + 1) * 100 / count else 100
+    val eta: String = when {
+        pagesLeft == 0 -> "Last page"
+        pace > 0f -> {
+            val mins = pagesLeft * pace / 60f
+            if (mins < 1f) "under a minute left"
+            else if (mins < 60f) "~${mins.roundToInt()} min left"
+            else "~${(mins / 60f).toInt()} h ${(mins % 60f).roundToInt()} min left"
+        }
+        pagesLeft == 1 -> "1 page left"
+        else -> "$pagesLeft pages left"
+    }
+    val prevMark = marks.lastOrNull { it < current }
+    val nextMark = marks.firstOrNull { it > current }
+
+    // Focus timer: a quiet countdown that taps you on the shoulder when the session is over.
+    val view = LocalView.current
+    var timerEnd by remember { mutableLongStateOf(0L) }
+    var timerLeft by remember { mutableIntStateOf(0) }
+    var timerStartPage by remember { mutableIntStateOf(0) }
+    var timerMenu by remember { mutableStateOf(false) }
+    var timerDone by remember { mutableStateOf<Int?>(null) }
+    val startTimer: (Int) -> Unit = { mins ->
+        timerStartPage = latestCurrent.value
+        timerLeft = mins * 60
+        timerEnd = SystemClock.elapsedRealtime() + mins * 60_000L
+    }
+    LaunchedEffect(timerEnd) {
+        if (timerEnd > 0L) {
+            while (true) {
+                val l = ((timerEnd - SystemClock.elapsedRealtime() + 999L) / 1000L).toInt()
+                if (l <= 0) break
+                timerLeft = l
+                delay(500)
+            }
+            timerLeft = 0
+            timerDone = (latestCurrent.value - timerStartPage).coerceAtLeast(0)
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            timerEnd = 0L
+        }
+    }
 
     // ---- sharpness: pages are drawn at the layout size and only ever TRANSFORMED while you zoom (no re-layout, no jump).
     // Once you stop, they are re-rendered at the resolution the screen needs, and at high zoom just the visible part is
@@ -467,18 +562,137 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
         }
 
         AnimatedVisibility(chrome, Modifier.align(Alignment.BottomCenter), enter = fadeIn(), exit = fadeOut()) {
+            Column(Modifier.fillMaxWidth().background(pal.surface.copy(alpha = 0.97f)).navigationBarsPadding()) {
+                ReaderScrubber(
+                    fraction = if (scrubbing) scrubFrac else (if (count > 1) current / (count - 1).toFloat() else 0f),
+                    count = count, marks = marks,
+                    onStart = { scrubbing = true; scrubFrom = latestCurrent.value; scrubPage = latestCurrent.value },
+                    onScrub = { f, p -> scrubFrac = f; scrubPage = p; scope.launch { goTo(p) } },
+                    onEnd = { scrubbing = false; if (abs(latestCurrent.value - scrubFrom) >= 3) backTo = scrubFrom },
+                    modifier = Modifier.fillMaxWidth().height(40.dp).padding(horizontal = 12.dp)
+                )
+                Row(Modifier.fillMaxWidth().height(46.dp).padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f).clickable { jump = true }) {
+                        Text("${current + 1} / $count", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = pal.ink)
+                        Text("$pct% · $eta", fontSize = 11.sp, color = pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (marks.isNotEmpty()) {
+                        Row(Modifier.clip(RoundedCornerShape(50)).background(pal.chip), verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { prevMark?.let { jumpTo(it) } }, enabled = prevMark != null, modifier = Modifier.size(34.dp)) {
+                                Icon(Icons.Rounded.KeyboardArrowLeft, "Previous bookmark", tint = if (prevMark != null) pal.ink else pal.soft.copy(alpha = 0.4f))
+                            }
+                            Icon(Icons.Rounded.Bookmark, null, tint = pal.accent, modifier = Modifier.size(14.dp))
+                            IconButton(onClick = { nextMark?.let { jumpTo(it) } }, enabled = nextMark != null, modifier = Modifier.size(34.dp)) {
+                                Icon(Icons.Rounded.KeyboardArrowRight, "Next bookmark", tint = if (nextMark != null) pal.ink else pal.soft.copy(alpha = 0.4f))
+                            }
+                        }
+                    }
+                    IconButton(onClick = { overview = true }, modifier = Modifier.size(42.dp)) { Icon(Icons.Rounded.GridView, "All pages", tint = pal.ink) }
+                    Box {
+                        Row(
+                            Modifier.clip(RoundedCornerShape(50)).clickable { timerMenu = true }.padding(horizontal = 10.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Rounded.Timer, "Focus timer", tint = if (timerEnd > 0L) pal.accent else pal.ink, modifier = Modifier.size(22.dp))
+                            if (timerEnd > 0L) {
+                                Spacer(Modifier.width(4.dp))
+                                Text(formatClock(timerLeft), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = pal.accent)
+                            }
+                        }
+                        DropdownMenu(expanded = timerMenu, onDismissRequest = { timerMenu = false }) {
+                            if (timerEnd > 0L) {
+                                MenuItem("Stop timer", Icons.Rounded.Close) { timerMenu = false; timerEnd = 0L; timerLeft = 0 }
+                            } else {
+                                MenuItem("Focus for 15 min", Icons.Rounded.Timer) { timerMenu = false; startTimer(15) }
+                                MenuItem("Focus for 25 min", Icons.Rounded.Timer) { timerMenu = false; startTimer(25) }
+                                MenuItem("Focus for 45 min", Icons.Rounded.Timer) { timerMenu = false; startTimer(45) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // "Back to where you were": after a long jump, one tap returns.
+        AnimatedVisibility(backTo != null && !scrubbing, Modifier.align(Alignment.BottomCenter), enter = fadeIn(), exit = fadeOut()) {
             Row(
-                Modifier.fillMaxWidth().background(pal.surface.copy(alpha = 0.97f)).navigationBarsPadding().height(56.dp).padding(horizontal = 12.dp),
+                Modifier.navigationBarsPadding().padding(bottom = if (chrome) 96.dp else 24.dp)
+                    .clip(RoundedCornerShape(50)).background(pal.ink)
+                    .clickable { val t = backTo; backTo = null; if (t != null) scope.launch { goTo(t) } }
+                    .padding(start = 14.dp, end = 18.dp, top = 11.dp, bottom = 11.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("${current + 1}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = pal.ink,
-                    modifier = Modifier.clickable { jump = true }.padding(horizontal = 8.dp, vertical = 8.dp))
-                Slider(
-                    value = current.toFloat(), onValueChange = { v -> scope.launch { goTo(v.roundToInt().coerceIn(0, count - 1)) } },
-                    valueRange = 0f..(count - 1).coerceAtLeast(1).toFloat(), modifier = Modifier.weight(1f),
-                    colors = SliderDefaults.colors(thumbColor = pal.accent, activeTrackColor = pal.accent, inactiveTrackColor = pal.line)
-                )
-                Text("$count", fontSize = 13.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 8.dp))
+                Icon(Icons.Rounded.History, null, tint = pal.bg, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Back to page ${(backTo ?: lastBack) + 1}", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = pal.bg)
+            }
+        }
+
+        // The page you are about to land on, right above your finger while you scrub.
+        if (scrubbing) {
+            val bw = 120.dp
+            val bx = (12.dp + (maxWidth - 24.dp) * scrubFrac - bw / 2).coerceIn(8.dp, maxWidth - bw - 8.dp)
+            Column(
+                Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(bottom = 96.dp).offset(x = bx).width(bw)
+                    .clip(RoundedCornerShape(14.dp)).background(Color(0xF0202124)).padding(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                val tb = scrubThumb
+                Box(
+                    Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(6.dp)).background(if (invert) Color(0xFF101010) else Color.White),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (tb != null) Image(tb.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit, colorFilter = if (invert) InvertFilter else null)
+                }
+                Spacer(Modifier.height(6.dp))
+                Text("Page ${scrubPage + 1}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+            }
+        }
+    }
+
+    timerDone?.let { n ->
+        AlertDialog(
+            onDismissRequest = { timerDone = null }, containerColor = pal.surface,
+            title = { Text("Focus session complete", fontFamily = Serif, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text((if (n > 0) "You moved through $n page" + (if (n == 1) "" else "s") + ". " else "") + "Rest your eyes and stretch for a few minutes. You earned it.")
+            },
+            confirmButton = { TextButton(onClick = { timerDone = null; startTimer(25) }) { Text("Another 25 min") } },
+            dismissButton = { TextButton(onClick = { timerDone = null }) { Text("Done") } }
+        )
+    }
+
+    if (overview) ModalBottomSheet(onDismissRequest = { overview = false }, containerColor = pal.surface) {
+        val cols = 3
+        val gridState = rememberLazyGridState(initialFirstVisibleItemIndex = ((current / cols) * cols).coerceAtLeast(0))
+        Column(Modifier.navigationBarsPadding().padding(bottom = 8.dp)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("All pages", Modifier.weight(1f), fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = pal.ink)
+                Text("$count", fontSize = 13.sp, color = pal.soft)
+            }
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(cols), state = gridState, modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(count) { i ->
+                    val on = i == current
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(
+                            Modifier.fillMaxWidth().aspectRatio(0.72f).clip(RoundedCornerShape(8.dp))
+                                .background(if (invert) Color(0xFF101010) else Color.White)
+                                .border(if (on) 3.dp else 1.dp, if (on) pal.accent else pal.line, RoundedCornerShape(8.dp))
+                                .clickable { overview = false; jumpTo(i) }
+                        ) {
+                            GridThumb(doc, i, invert)
+                            if (i in marks) Icon(Icons.Rounded.Bookmark, null, tint = pal.accent, modifier = Modifier.align(Alignment.TopEnd).padding(2.dp).size(20.dp))
+                        }
+                        Text(
+                            "${i + 1}", fontSize = 12.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (on) pal.accent else pal.soft, modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
             }
         }
     }
@@ -538,7 +752,7 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
             Text("Bookmarks", fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 20.sp, color = pal.ink, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
             if (bms.isEmpty()) Text("Tap the bookmark icon at the top to mark a page.", fontSize = 14.sp, color = pal.soft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
             bms.forEach { b ->
-                Row(Modifier.fillMaxWidth().clickable { scope.launch { goTo(b.page.coerceIn(0, count - 1)) }; sheet = false }.padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().clickable { jumpTo(b.page); sheet = false }.padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Rounded.Bookmark, null, tint = pal.accent, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(14.dp))
                     Text("Page ${b.page + 1}", Modifier.weight(1f).padding(vertical = 14.dp), fontSize = 15.sp, color = pal.ink)
@@ -559,7 +773,7 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
             },
             confirmButton = {
                 TextButton(onClick = {
-                    txt.toIntOrNull()?.let { n -> scope.launch { goTo((n - 1).coerceIn(0, count - 1)) } }
+                    txt.toIntOrNull()?.let { n -> jumpTo(n - 1) }
                     jump = false
                 }) { Text("Go") }
             },
@@ -850,4 +1064,69 @@ private fun PagerPage(doc: PdfDoc, page: Int, ratio: Float, invert: Boolean, chr
             }
         }
     }
+}
+
+private fun formatClock(sec: Int): String = "%d:%02d".format(sec / 60, sec % 60)
+
+/**
+ * The page scrubber: tap or drag anywhere on the track. Yellow ticks mark your bookmarks.
+ * [onScrub] gets the position (0..1) and the page it points to.
+ */
+@Composable
+private fun ReaderScrubber(
+    fraction: Float, count: Int, marks: List<Int>,
+    onStart: () -> Unit, onScrub: (Float, Int) -> Unit, onEnd: () -> Unit, modifier: Modifier = Modifier
+) {
+    val pal = LocalPal.current
+    val startNow by rememberUpdatedState(onStart)
+    val scrubNow by rememberUpdatedState(onScrub)
+    val endNow by rememberUpdatedState(onEnd)
+    Box(
+        modifier.pointerInput(count) {
+            val pad = 12.dp.toPx()
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                fun at(x: Float) {
+                    val span = (size.width - 2 * pad).coerceAtLeast(1f)
+                    val f = ((x - pad) / span).coerceIn(0f, 1f)
+                    scrubNow(f, (f * (count - 1)).roundToInt().coerceIn(0, (count - 1).coerceAtLeast(0)))
+                }
+                startNow()
+                at(down.position.x)
+                do {
+                    val event = awaitPointerEvent()
+                    val c = event.changes.firstOrNull { it.id == down.id }
+                    if (c != null && c.pressed) { at(c.position.x); c.consume() }
+                } while (event.changes.any { it.pressed })
+                endNow()
+            }
+        }
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val pad = 12.dp.toPx()
+            val span = (size.width - 2 * pad).coerceAtLeast(1f)
+            val cy = size.height / 2f
+            val th = 4.dp.toPx()
+            drawRoundRect(pal.line, Offset(pad, cy - th / 2f), Size(span, th), CornerRadius(th / 2f))
+            val x = pad + span * fraction.coerceIn(0f, 1f)
+            drawRoundRect(pal.accent, Offset(pad, cy - th / 2f), Size((x - pad).coerceAtLeast(0f), th), CornerRadius(th / 2f))
+            val tickW = 3.dp.toPx()
+            marks.forEach { p ->
+                val mx = pad + span * (if (count > 1) p / (count - 1).toFloat() else 0f)
+                drawRoundRect(pal.hi, Offset(mx - tickW / 2f, cy - 9.dp.toPx()), Size(tickW, 18.dp.toPx()), CornerRadius(tickW / 2f))
+            }
+            drawCircle(Color.Black.copy(alpha = 0.15f), 12.dp.toPx(), Offset(x, cy + 1.dp.toPx()))
+            drawCircle(pal.accent, 10.dp.toPx(), Offset(x, cy))
+            drawCircle(Color.White, 4.dp.toPx(), Offset(x, cy))
+        }
+    }
+}
+
+/** One page in the all-pages overview, drawn small and only when it scrolls into view. */
+@Composable
+private fun GridThumb(doc: PdfDoc, index: Int, invert: Boolean) {
+    var bmp by remember(doc, index) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(doc, index) { bmp = doc.render(index, 240) }
+    val b = bmp
+    if (b != null) Image(b.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit, colorFilter = if (invert) InvertFilter else null)
 }

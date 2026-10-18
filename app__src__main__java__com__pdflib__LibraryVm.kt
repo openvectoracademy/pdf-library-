@@ -144,6 +144,10 @@ class LibraryVm(app: Application) : AndroidViewModel(app) {
     var pageMode by mutableStateOf(prefs.getBoolean("pageMode", false))
     fun updatePageMode(v: Boolean) { pageMode = v; prefs.edit().putBoolean("pageMode", v).apply() }
 
+    /** Seconds you usually spend on a page, learned from your own reading (0 = not known yet). Feeds "time left". */
+    var paceSec by mutableFloatStateOf(prefs.getFloat("paceSec", 0f))
+    fun updatePace(v: Float) { paceSec = v; prefs.edit().putFloat("paceSec", v).apply() }
+
     /** Asked for from a menu or the reader; the screen (which owns an Activity) carries it out. */
     var shareReq by mutableStateOf<ShareReq?>(null)
     /** True while a PDF from another app is being copied in. */
