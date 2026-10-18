@@ -51,6 +51,7 @@ private sealed interface Dlg {
 @Composable
 fun LibraryScreen(vm: LibraryVm) {
     val pal = LocalPal.current
+    val widthDp = LocalConfiguration.current.screenWidthDp
     val folders by vm.folders.collectAsState()
     val pdfs by vm.pdfs.collectAsState()
     val currentId = vm.stack.lastOrNull()
@@ -279,7 +280,6 @@ fun LibraryScreen(vm: LibraryVm) {
                             }
                         }
                         if (vm.gridView) {
-                            val widthDp = LocalConfiguration.current.screenWidthDp
                             val cols = if (widthDp >= 840) 4 else if (widthDp >= 600) 3 else 2
                             items(docs.chunked(cols), key = { "g${it.first().id}" }) { rowItems ->
                                 Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalAlignment = Alignment.Top) {
