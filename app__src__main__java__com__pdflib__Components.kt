@@ -64,7 +64,15 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
@@ -694,13 +702,22 @@ fun FolderDialog(
                 OutlinedTextField(
                     name, { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth().focusRequester(fr),
                     placeholder = { Text("e.g. Physics") }, isError = problem != null,
-                    supportingText = { val pr = problem; if (pr != null) Text(pr) }
+                    supportingText = { val pr = problem; if (pr != null) Text(pr) },
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { if (name.isNotBlank() && problem == null) onOk(name.trim(), color) })
                 )
                 Spacer(Modifier.height(16.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val toneNames = listOf("Red", "Amber", "Green", "Teal", "Blue", "Plum")
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     FolderTones.forEachIndexed { i, c ->
-                        Box(Modifier.size(28.dp).clip(CircleShape).background(c).clickable { color = i }, contentAlignment = Alignment.Center) {
-                            if (color == i) Icon(Icons.Rounded.Check, null, tint = pal.onAccent, modifier = Modifier.size(16.dp))
+                        // 34dp circles with a clear tick; each is announced by name and as selected or not.
+                        Box(
+                            Modifier.size(34.dp).clip(CircleShape).background(c)
+                                .selectable(selected = color == i, role = Role.RadioButton) { color = i }
+                                .semantics { contentDescription = toneNames.getOrElse(i) { "Colour ${i + 1}" } },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (color == i) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
@@ -796,7 +813,9 @@ fun FolderPicker(
                     )
                 }
                 if (query.isNotEmpty()) {
-                    Icon(Icons.Rounded.Close, "Clear", tint = pal.soft, modifier = Modifier.size(20.dp).clip(CircleShape).clickable { query = "" })
+                    Box(Modifier.size(36.dp).clip(CircleShape).clickable { query = "" }, contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.Close, "Clear search", tint = pal.soft, modifier = Modifier.size(20.dp))
+                    }
                 }
             }
             if (searching) {
@@ -962,6 +981,8 @@ fun RenameDialog(initial: String, onDismiss: () -> Unit, check: (suspend (String
             OutlinedTextField(
                 text, { text = it }, singleLine = true, isError = problem != null,
                 supportingText = { val pr = problem; if (pr != null) Text(pr) },
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { if (text.text.isNotBlank() && problem == null) onOk(text.text.trim()) }),
                 modifier = Modifier.fillMaxWidth().focusRequester(fr)
             )
         },

@@ -502,6 +502,15 @@ fun SettingsScreen(vm: LibraryVm) {
             }
         }
 
+        item {
+            // The same choices live in the reader's tune menu; here they are easy to find before opening anything.
+            SettingsSection("Reading", footer = "Brightness, orientation and more are in the reader: tap the tune icon in its top bar.") {
+                SwitchRow(Icons.Rounded.LightMode, "Keep screen on", "Stops the screen from turning off while you read", vm.keepOn) { vm.updateKeepOn(it) }
+                RowDivider()
+                SwitchRow(Icons.Rounded.AutoStories, "Page by page", "Swipe sideways, one page at a time, instead of scrolling", vm.pageMode) { vm.updatePageMode(it) }
+            }
+        }
+
         if (Storage.supported()) item {
             SettingsSection(
                 "Phone access",
