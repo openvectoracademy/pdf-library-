@@ -277,9 +277,15 @@ fun LibraryScreen(vm: LibraryVm) {
                             Spacer(Modifier.height(16.dp))
                             Text("Link a folder from your phone. Keep its folders as they are, or bring in just the files. Shelf reads them right where they are. Nothing is copied or uploaded.", fontSize = 15.sp, lineHeight = 22.sp, color = pal.soft)
                             Spacer(Modifier.height(28.dp))
-                            Button(onClick = { linkPicker.launch(null) }, shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White),
+                            Button(onClick = { linkPicker.launch(null) }, shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = pal.onAccent),
                                 contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp)) {
                                 Text("Link a phone folder", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                            }
+                            // A softer way in, for people who just have a few files.
+                            TextButton(onClick = { pickFiles.launch(arrayOf("application/pdf")) }) {
+                                Icon(Icons.Rounded.NoteAdd, null, tint = pal.soft, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("or add a few PDF files", color = pal.soft, fontSize = 14.sp)
                             }
                         }
                     }
@@ -420,7 +426,7 @@ fun LibraryScreen(vm: LibraryVm) {
             var add by remember { mutableStateOf(false) }
             Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
                 FloatingActionButton(
-                    onClick = { add = true }, containerColor = pal.accent, contentColor = Color.White, shape = RoundedCornerShape(18.dp)
+                    onClick = { add = true }, containerColor = pal.accent, contentColor = pal.onAccent, shape = RoundedCornerShape(18.dp)
                 ) { Icon(Icons.Rounded.Add, "Add") }
                 DropdownMenu(expanded = add, onDismissRequest = { add = false }) {
                     DropdownMenuItem(
@@ -553,7 +559,7 @@ private fun ResumeCard(p: PdfEntity, place: String?, label: String, modifier: Mo
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Overline(if (done && label == "Continue reading") "Last read" else label, color = pal.accent)
                 Spacer(Modifier.weight(1f))
-                Text(timeAgo(p.lastOpened), fontSize = 11.sp, color = pal.soft)
+                Text(timeAgo(p.lastOpened), fontSize = 12.sp, color = pal.soft)
             }
             Spacer(Modifier.height(6.dp))
             Text(p.title(), fontFamily = Serif, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, lineHeight = 23.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, color = pal.ink)
@@ -572,7 +578,7 @@ private fun ResumeCard(p: PdfEntity, place: String?, label: String, modifier: Mo
         }
         Spacer(Modifier.width(14.dp))
         Box(Modifier.size(44.dp).clip(CircleShape).background(pal.accent), contentAlignment = Alignment.Center) {
-            Icon(Icons.Rounded.PlayArrow, "Resume", tint = Color.White)
+            Icon(Icons.Rounded.PlayArrow, "Resume", tint = pal.onAccent)
         }
     }
 }

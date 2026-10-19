@@ -218,7 +218,7 @@ private fun BottomBar(selected: Int, onSelect: (Int) -> Unit) {
                         contentAlignment = Alignment.Center
                     ) { Icon(icon, null, tint = tint, modifier = Modifier.size(24.dp)) }
                     Spacer(Modifier.height(2.dp))
-                    Text(label, fontSize = 11.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) pal.ink else pal.soft)
+                    Text(label, fontSize = 12.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) pal.ink else pal.soft)
                 }
             }
         }

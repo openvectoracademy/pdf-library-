@@ -173,7 +173,7 @@ fun ReaderScreen(vm: LibraryVm, pdfId: Long) {
                 Hint("Couldn't find this PDF", "It may have been moved out of your linked folders, deleted, or it is password-protected. Point Shelf to the file and everything you saved for it (folder, stars, bookmarks, progress) stays.")
                 Button(
                     onClick = { findFile.launch(arrayOf("application/pdf")) }, shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White),
+                    colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = pal.onAccent),
                     contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
                 ) { Text("Find this file", fontWeight = FontWeight.SemiBold) }
                 TextButton(onClick = { vm.closeReader() }) { Text("Go back", color = pal.soft) }
@@ -574,7 +574,7 @@ private fun Reading(vm: LibraryVm, pdfId: Long, title: String, doc: PdfDoc, firs
                 Row(Modifier.fillMaxWidth().height(46.dp).padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f).clickable { jump = true }) {
                         Text("${current + 1} / $count", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = pal.ink)
-                        Text("$pct% · $eta", fontSize = 11.sp, color = pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("$pct% · $eta", fontSize = 12.sp, color = pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     if (marks.isNotEmpty()) {
                         Row(Modifier.clip(RoundedCornerShape(50)).background(pal.chip), verticalAlignment = Alignment.CenterVertically) {
@@ -886,7 +886,7 @@ private fun PageView(doc: PdfDoc, index: Int, ratio: Float, baseWidthPx: Int, ov
 @Composable
 private fun SettingLabel(text: String) {
     val pal = LocalPal.current
-    Text(text.uppercase(), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp, color = pal.soft, modifier = Modifier.padding(top = 20.dp, bottom = 8.dp))
+    Text(text.uppercase(), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp, color = pal.soft, modifier = Modifier.padding(top = 20.dp, bottom = 8.dp))
 }
 
 @Composable
@@ -915,7 +915,7 @@ private fun Segmented(options: List<String>, selected: Int, onSelect: (Int) -> U
                 Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(if (on) pal.accent else Color.Transparent)
                     .clickable { onSelect(i) }.padding(vertical = 9.dp),
                 contentAlignment = Alignment.Center
-            ) { Text(label, fontSize = 14.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium, color = if (on) Color.White else pal.ink) }
+            ) { Text(label, fontSize = 14.sp, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Medium, color = if (on) pal.onAccent else pal.ink) }
         }
     }
 }

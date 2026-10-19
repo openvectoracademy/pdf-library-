@@ -73,7 +73,7 @@ private fun ModeCard(icon: ImageVector, title: String, body: String, selected: B
             Modifier.size(22.dp).clip(CircleShape).background(if (selected) pal.accent else Color.Transparent)
                 .border(1.5.dp, if (selected) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
             contentAlignment = Alignment.Center
-        ) { if (selected) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(15.dp)) }
+        ) { if (selected) Icon(Icons.Rounded.Check, null, tint = pal.onAccent, modifier = Modifier.size(15.dp)) }
     }
 }
 
@@ -110,7 +110,7 @@ fun LinkModeSheet(vm: LibraryVm, tree: Uri, target: Long?, targetName: String, o
             Button(
                 onClick = { vm.linkFolder(tree, target, mode); onClose() },
                 modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White)
+                colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = pal.onAccent)
             ) { Text("Add to $targetName", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) }
             TextButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Cancel", color = pal.soft) }
         }
@@ -124,7 +124,7 @@ private fun LinkChip(text: String, color: Color, icon: ImageVector? = null) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (icon != null) { Icon(icon, null, tint = color, modifier = Modifier.size(13.dp)); Spacer(Modifier.width(4.dp)) }
-        Text(text, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = color)
+        Text(text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = color)
     }
 }
 

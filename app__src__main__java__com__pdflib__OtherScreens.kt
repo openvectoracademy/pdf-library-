@@ -307,7 +307,7 @@ private fun StatusChip(text: String, color: Color, icon: ImageVector) {
     ) {
         Icon(icon, null, tint = color, modifier = Modifier.size(13.dp))
         Spacer(Modifier.width(4.dp))
-        Text(text, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = color)
+        Text(text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = color)
     }
 }
 
@@ -439,7 +439,7 @@ private fun ThemeCard(mode: ThemeMode, selected: Boolean, modifier: Modifier, on
                     .background(if (selected) pal.accent else Color.Transparent)
                     .border(1.5.dp, if (selected) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
                 contentAlignment = Alignment.Center
-            ) { if (selected) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(12.dp)) }
+            ) { if (selected) Icon(Icons.Rounded.Check, null, tint = pal.onAccent, modifier = Modifier.size(12.dp)) }
             Spacer(Modifier.width(6.dp))
             Text(mode.label, fontSize = 13.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium, color = pal.ink)
         }
@@ -719,7 +719,7 @@ fun SettingsScreen(vm: LibraryVm) {
                         Button(
                             onClick = { vm.restoreToShelf(picked.toList()); picked.clear() },
                             shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White)
+                            colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = pal.onAccent)
                         ) { Text("Restore (${picked.size})", fontWeight = FontWeight.SemiBold) }
                     } else {
                         TextButton(onClick = { vm.restoreToShelf(removed.map { it.id }) }) { Text("Restore all", color = pal.accent) }
@@ -742,7 +742,7 @@ fun SettingsScreen(vm: LibraryVm) {
                                 .background(if (on) pal.accent else Color.Transparent)
                                 .border(1.5.dp, if (on) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
                             contentAlignment = Alignment.Center
-                        ) { if (on) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp)) }
+                        ) { if (on) Icon(Icons.Rounded.Check, null, tint = pal.onAccent, modifier = Modifier.size(16.dp)) }
                         Spacer(Modifier.width(14.dp))
                         Text(p.title(), Modifier.weight(1f).padding(vertical = 12.dp), fontSize = 15.sp, color = pal.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         if (picked.isEmpty()) TextButton(onClick = { vm.restoreToShelf(listOf(p.id)) }) { Text("Restore", color = pal.accent) }
@@ -803,7 +803,7 @@ fun SettingsScreen(vm: LibraryVm) {
                         Button(
                             onClick = { vm.restoreFolders(picked.toList()); picked.clear() },
                             shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White)
+                            colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = pal.onAccent)
                         ) { Text("Restore (${picked.size})", fontWeight = FontWeight.SemiBold) }
                     } else {
                         TextButton(onClick = { vm.restoreFolders(removedFolders.map { it.folder.id }) }) { Text("Restore all", color = pal.accent) }
@@ -833,7 +833,7 @@ fun SettingsScreen(vm: LibraryVm) {
                                 .background(if (on) pal.accent else Color.Transparent)
                                 .border(1.5.dp, if (on) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
                             contentAlignment = Alignment.Center
-                        ) { if (on) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp)) }
+                        ) { if (on) Icon(Icons.Rounded.Check, null, tint = pal.onAccent, modifier = Modifier.size(16.dp)) }
                         Spacer(Modifier.width(14.dp))
                         Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(tone.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
                             Icon(Icons.Rounded.Folder, null, tint = tone, modifier = Modifier.size(22.dp))
@@ -890,7 +890,7 @@ fun SettingsScreen(vm: LibraryVm) {
                         Button(
                             onClick = { vm.restoreFromTrash(picked.toList()); picked.clear() },
                             shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = Color.White)
+                            colors = ButtonDefaults.buttonColors(containerColor = pal.accent, contentColor = pal.onAccent)
                         ) { Text("Restore (${picked.size})", fontWeight = FontWeight.SemiBold) }
                     } else {
                         TextButton(onClick = { vm.restoreFromTrash(trashList.map { it.id }) }) { Text("Restore all", color = pal.accent) }
@@ -918,7 +918,7 @@ fun SettingsScreen(vm: LibraryVm) {
                                 .background(if (on) pal.accent else Color.Transparent)
                                 .border(1.5.dp, if (on) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
                             contentAlignment = Alignment.Center
-                        ) { if (on) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp)) }
+                        ) { if (on) Icon(Icons.Rounded.Check, null, tint = pal.onAccent, modifier = Modifier.size(16.dp)) }
                         Spacer(Modifier.width(14.dp))
                         Column(Modifier.weight(1f)) {
                             Text(p.title(), fontSize = 15.sp, fontWeight = FontWeight.Medium, color = pal.ink, maxLines = 2, overflow = TextOverflow.Ellipsis)

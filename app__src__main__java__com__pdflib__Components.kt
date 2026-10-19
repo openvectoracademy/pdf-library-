@@ -48,6 +48,16 @@ import androidx.compose.ui.unit.sp
 import java.util.Locale
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.ui.composed
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -266,10 +276,13 @@ fun ViewToggle(grid: Boolean, onChange: (Boolean) -> Unit) {
 fun GridThumb(pdf: PdfEntity, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     val pal = LocalPal.current
-    val bmp by produceState<Bitmap?>(null, pdf.id, pdf.size) { value = Thumbs.get(ctx, pdf) }
-    BoxWithConstraints(modifier.clip(RoundedCornerShape(14.dp)).background(pal.chip), contentAlignment = Alignment.Center) {
+    var loaded by remember(pdf.id, pdf.size) { mutableStateOf(false) }
+    val bmp by produceState<Bitmap?>(null, pdf.id, pdf.size) { value = Thumbs.get(ctx, pdf); loaded = true }
+    BoxWithConstraints(modifier.clip(RoundedCornerShape(14.dp)).background(pal.chip).then(if (!loaded) Modifier.shimmer(pal.chip, pal.surface) else Modifier), contentAlignment = Alignment.Center) {
         val b = bmp
         if (b != null && b.height > 0) {
+            val fade = remember(b) { Animatable(0f) }
+            LaunchedEffect(b) { fade.animateTo(1f, tween(220)) }
             val r = b.width.toFloat() / b.height
             val maxW = maxWidth * 0.84f
             val maxH = maxHeight * 0.84f
@@ -277,10 +290,10 @@ fun GridThumb(pdf: PdfEntity, modifier: Modifier = Modifier) {
             val h = w / r
             Image(
                 b.asImageBitmap(), null,
-                Modifier.size(w, h).clip(RoundedCornerShape(3.dp)).border(1.dp, pal.line, RoundedCornerShape(3.dp)),
+                Modifier.size(w, h).graphicsLayer { alpha = fade.value }.clip(RoundedCornerShape(3.dp)).border(1.dp, pal.line, RoundedCornerShape(3.dp)),
                 contentScale = ContentScale.FillBounds
             )
-        } else Text("PDF", fontSize = 11.sp, color = pal.soft, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+        } else if (loaded) Text("PDF", fontSize = 12.sp, color = pal.soft, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
     }
 }
 
@@ -310,7 +323,7 @@ fun PdfGridCard(
                         .background(if (selected) pal.accent else pal.surface.copy(alpha = 0.85f))
                         .border(1.5.dp, if (selected) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
                     contentAlignment = Alignment.Center
-                ) { if (selected) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp)) }
+                ) { if (selected) Icon(Icons.Rounded.Check, null, tint = pal.onAccent, modifier = Modifier.size(16.dp)) }
             } else {
                 Box(
                     Modifier.align(Alignment.TopEnd).padding(5.dp).size(32.dp).clip(CircleShape)
@@ -335,7 +348,7 @@ fun PdfGridCard(
                     fontWeight = FontWeight.Medium, color = if (pdf.missing) pal.soft else pal.ink
                 )
                 Spacer(Modifier.height(2.dp))
-                Text(meta, fontSize = 11.sp, color = if (pdf.missing) pal.accent else pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(meta, fontSize = 12.sp, color = if (pdf.missing) pal.accent else pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (onMore != null && !selecting) {
                 Box {
@@ -372,7 +385,7 @@ fun SortMenu(mode: Int, onPick: (Int) -> Unit) {
                     text = {
                         Column {
                             Text(label, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal, color = if (on) pal.accent else pal.ink)
-                            if (i == SORT_CUSTOM) Text("Hold and drag to rearrange", fontSize = 11.sp, color = pal.soft)
+                            if (i == SORT_CUSTOM) Text("Hold and drag to rearrange", fontSize = 12.sp, color = pal.soft)
                         }
                     },
                     onClick = { open = false; onPick(i) }
@@ -434,10 +447,13 @@ val ThumbSlotLarge = DpSize(88.dp, 80.dp)
 fun Thumb(pdf: PdfEntity, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     val pal = LocalPal.current
-    val bmp by produceState<Bitmap?>(null, pdf.id, pdf.size) { value = Thumbs.get(ctx, pdf) }
-    BoxWithConstraints(modifier.clip(RoundedCornerShape(10.dp)).background(pal.chip), contentAlignment = Alignment.Center) {
+    var loaded by remember(pdf.id, pdf.size) { mutableStateOf(false) }
+    val bmp by produceState<Bitmap?>(null, pdf.id, pdf.size) { value = Thumbs.get(ctx, pdf); loaded = true }
+    BoxWithConstraints(modifier.clip(RoundedCornerShape(10.dp)).background(pal.chip).then(if (!loaded) Modifier.shimmer(pal.chip, pal.surface) else Modifier), contentAlignment = Alignment.Center) {
         val b = bmp
         if (b != null && b.width > 0 && b.height > 0) {
+            val fade = remember(b) { Animatable(0f) }
+            LaunchedEffect(b) { fade.animateTo(1f, tween(220)) }
             val ratio = b.width.toFloat() / b.height
             val inset = 3.dp
             val boxW = maxWidth - inset * 2
@@ -447,10 +463,10 @@ fun Thumb(pdf: PdfEntity, modifier: Modifier = Modifier) {
             val page = RoundedCornerShape(3.dp)
             Image(
                 b.asImageBitmap(), null,
-                Modifier.size(w, h).shadow(1.5.dp, page).clip(page).border(0.5.dp, pal.line, page),
+                Modifier.size(w, h).graphicsLayer { alpha = fade.value }.shadow(1.5.dp, page).clip(page).border(0.5.dp, pal.line, page),
                 contentScale = ContentScale.FillBounds
             )
-        } else Text("PDF", fontSize = 9.sp, color = pal.soft.copy(alpha = 0.7f), fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+        } else if (loaded) Text("PDF", fontSize = 11.sp, color = pal.soft.copy(alpha = 0.7f), fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
     }
 }
 
@@ -493,7 +509,7 @@ fun PdfRow(
                 .background(if (selected) pal.accent else Color.Transparent)
                 .border(1.5.dp, if (selected) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
                 contentAlignment = Alignment.Center) {
-                if (selected) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                if (selected) Icon(Icons.Rounded.Check, null, tint = pal.onAccent, modifier = Modifier.size(16.dp))
             }
         } else {
             IconButton(onClick = onFav, modifier = Modifier.size(40.dp)) {
@@ -551,7 +567,7 @@ fun FolderRow(
                     .border(1.5.dp, if (selected) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                if (selected) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                if (selected) Icon(Icons.Rounded.Check, null, tint = pal.onAccent, modifier = Modifier.size(16.dp))
             }
         } else {
             if (onFav != null) {
@@ -606,7 +622,7 @@ fun FolderGridCard(
                         .background(if (selected) pal.accent else pal.surface.copy(alpha = 0.85f))
                         .border(1.5.dp, if (selected) pal.accent else pal.soft.copy(alpha = 0.5f), CircleShape),
                     contentAlignment = Alignment.Center
-                ) { if (selected) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp)) }
+                ) { if (selected) Icon(Icons.Rounded.Check, null, tint = pal.onAccent, modifier = Modifier.size(16.dp)) }
             } else if (onFav != null) {
                 Box(
                     Modifier.align(Alignment.TopEnd).padding(5.dp).size(32.dp).clip(CircleShape)
@@ -628,7 +644,7 @@ fun FolderGridCard(
                     if (f.link != null) Icon(Icons.Rounded.PhoneAndroid, "A folder on your phone", tint = pal.soft, modifier = Modifier.padding(start = 5.dp).size(13.dp))
                 }
                 Spacer(Modifier.height(2.dp))
-                Text(subtitle, fontSize = 11.sp, color = pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(subtitle, fontSize = 12.sp, color = pal.soft, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (!selecting) {
                 Box {
@@ -684,7 +700,7 @@ fun FolderDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FolderTones.forEachIndexed { i, c ->
                         Box(Modifier.size(28.dp).clip(CircleShape).background(c).clickable { color = i }, contentAlignment = Alignment.Center) {
-                            if (color == i) Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                            if (color == i) Icon(Icons.Rounded.Check, null, tint = pal.onAccent, modifier = Modifier.size(16.dp))
                         }
                     }
                 }
@@ -859,7 +875,7 @@ fun FolderPicker(
                 onClick = { finish { onPick(here) } }, enabled = !same && !blocked,
                 modifier = Modifier.padding(16.dp).fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = pal.accent, contentColor = Color.White,
+                    containerColor = pal.accent, contentColor = pal.onAccent,
                     disabledContainerColor = pal.chip, disabledContentColor = pal.soft
                 )
             ) {
@@ -918,7 +934,7 @@ private fun PickFolderRow(f: FolderEntity, sub: String?, isCurrent: Boolean, pho
         if (isCurrent) {
             Spacer(Modifier.width(8.dp))
             Text(
-                "Current", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = pal.accent,
+                "Current", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = pal.accent,
                 modifier = Modifier.clip(RoundedCornerShape(50)).background(pal.accent.copy(alpha = 0.14f)).padding(horizontal = 8.dp, vertical = 3.dp)
             )
         }
@@ -1057,5 +1073,21 @@ fun highlightText(text: String, tokens: List<String>, color: Color): AnnotatedSt
             else append(text.substring(k, e))
             k = e
         }
+    }
+}
+
+
+/** A soft light sweep for placeholders: tells you something is loading, and keeps the layout from jumping when it arrives. */
+fun Modifier.shimmer(base: Color, glow: Color): Modifier = composed {
+    val t = rememberInfiniteTransition(label = "shimmer")
+    val x by t.animateFloat(-0.6f, 1.6f, infiniteRepeatable(tween(1200, easing = LinearEasing), RepeatMode.Restart), label = "shimmerX")
+    drawBehind {
+        val w = size.width
+        drawRect(
+            Brush.linearGradient(
+                listOf(Color.Transparent, glow.copy(alpha = 0.75f), Color.Transparent),
+                start = Offset(x * w - w * 0.4f, 0f), end = Offset(x * w + w * 0.4f, size.height * 0.4f)
+            )
+        )
     }
 }

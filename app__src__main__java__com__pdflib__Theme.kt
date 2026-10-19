@@ -13,12 +13,14 @@ import androidx.compose.ui.graphics.Color
 @Immutable
 class Pal(
     val dark: Boolean, val bg: Color, val surface: Color, val ink: Color, val soft: Color,
-    val line: Color, val accent: Color, val chip: Color, val hi: Color
+    val line: Color, val accent: Color, val chip: Color, val hi: Color,
+    /** Text and icons that sit ON the accent colour (white on light, near-black on dark: both pass 4.5:1). */
+    val onAccent: Color
 )
 
 // Paper & ink: warm off-white, near-black ink, one vermilion accent, a highlighter yellow for stars/bookmarks.
-val LightPal = Pal(false, Color(0xFFF6F3EC), Color(0xFFFFFDF8), Color(0xFF1B1A17), Color(0xFF6E6A5F), Color(0xFFE4DFD3), Color(0xFFC8452D), Color(0xFFECE7DA), Color(0xFFE2A91F))
-val DarkPal = Pal(true, Color(0xFF14130F), Color(0xFF1D1C17), Color(0xFFF0ECE2), Color(0xFF9D988B), Color(0xFF2D2B24), Color(0xFFE8664B), Color(0xFF29271F), Color(0xFFE9B949))
+val LightPal = Pal(false, Color(0xFFF6F3EC), Color(0xFFFFFDF8), Color(0xFF1B1A17), Color(0xFF676357), Color(0xFFE4DFD3), Color(0xFFB83B25), Color(0xFFECE7DA), Color(0xFFE2A91F), Color.White)
+val DarkPal = Pal(true, Color(0xFF14130F), Color(0xFF1D1C17), Color(0xFFF0ECE2), Color(0xFF9D988B), Color(0xFF2D2B24), Color(0xFFE8664B), Color(0xFF29271F), Color(0xFFE9B949), Color(0xFF14130F))
 val LocalPal = staticCompositionLocalOf { LightPal }
 
 val FolderTones = listOf(
@@ -46,11 +48,11 @@ fun isDarkFor(mode: ThemeMode): Boolean = when (mode) {
 fun PdfLibTheme(dark: Boolean, content: @Composable () -> Unit) {
     val p = if (dark) DarkPal else LightPal
     val scheme = if (dark) darkColorScheme(
-        primary = p.accent, onPrimary = Color.White, background = p.bg, onBackground = p.ink,
+        primary = p.accent, onPrimary = p.onAccent, background = p.bg, onBackground = p.ink,
         surface = p.surface, onSurface = p.ink, surfaceVariant = p.chip, onSurfaceVariant = p.soft,
         outline = p.line, outlineVariant = p.line
     ) else lightColorScheme(
-        primary = p.accent, onPrimary = Color.White, background = p.bg, onBackground = p.ink,
+        primary = p.accent, onPrimary = p.onAccent, background = p.bg, onBackground = p.ink,
         surface = p.surface, onSurface = p.ink, surfaceVariant = p.chip, onSurfaceVariant = p.soft,
         outline = p.line, outlineVariant = p.line
     )
